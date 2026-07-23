@@ -1,0 +1,41 @@
+{
+  "formatter": "none",
+  "code_actions_on_format": {
+    "source.fixAll.eslint": true
+  },
+  "languages": {
+    "TypeScript": {
+      "language_servers": ["typescript-ls", "!vtsls", "!typescript-language-server", "..."]
+    },
+    "TSX": {
+      "language_servers": ["typescript-ls", "!vtsls", "!typescript-language-server", "..."]
+    },
+    "JavaScript": {
+      "language_servers": ["typescript-ls", "!vtsls", "!typescript-language-server", "..."]
+    }
+  },
+  "lsp": {
+    "typescript-ls": {
+      "settings": {
+        "package_version": "7.0.2"
+      }
+    },
+    "eslint": {
+      "settings": {
+        "workingDirectories": ["./"],
+        "rulesCustomizations": [
+          { "rule": "style/*", "severity": "off", "fixable": true },
+          { "rule": "format/*", "severity": "off", "fixable": true },
+          { "rule": "*-indent", "severity": "off", "fixable": true },
+          { "rule": "*-spacing", "severity": "off", "fixable": true },
+          { "rule": "*-spaces", "severity": "off", "fixable": true },
+          { "rule": "*-order", "severity": "off", "fixable": true },
+          { "rule": "*-dangle", "severity": "off", "fixable": true },
+          { "rule": "*-newline", "severity": "off", "fixable": true },
+          { "rule": "*quotes", "severity": "off", "fixable": true },
+          { "rule": "*semi", "severity": "off", "fixable": true }
+        ]
+      }
+    }
+  }
+}

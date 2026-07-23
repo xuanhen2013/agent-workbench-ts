@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "jsx": "react-jsx",
+    // Environment setup & latest features
+    "lib": ["ESNext", "DOM"],
+    "moduleDetection": "force",
+    "module": "Preserve",
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "types": ["bun"],
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+
+    // 让 @/foo 解析为 src/foo，避免相对路径逐层 ../../。
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
+    // Best practices
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+
+    "noPropertyAccessFromIndexSignature": false,
+    "noUncheckedIndexedAccess": true,
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  }
+}
