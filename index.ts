@@ -1,12 +1,10 @@
-import { Hono } from 'hono'
-import { IndexRouters } from './src/routes'
+import process from 'node:process'
+import { app } from './src/app'
 
-const app = new Hono()
-
-app.route('/', IndexRouters)
+const port = Number(process.env.PORT ?? 7233)
 
 export default {
   idleTimeout: 100,
-  port: 7233,
+  port,
   fetch: app.fetch,
 }

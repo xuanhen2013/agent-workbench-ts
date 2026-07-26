@@ -3,6 +3,11 @@
   "type": "module",
   "module": "index.ts",
   "scripts": {
+    "dev": "bun --watch index.ts",
+    "start": "bun run index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test --path-ignore-patterns \"tests/smoke/**\"",
+    "check": "bun run typecheck && bun run lint && bun run test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "eslint . --fix"
