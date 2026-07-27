@@ -146,7 +146,7 @@ function createFixture(
 
 async function invokeGraph(
   graph: ReturnType<typeof createReActGraph>,
-  input: { goal: string, maxToolRounds?: number },
+  input: { goal: string, maxToolRounds?: number, maxFailures?: number },
   runId: string,
 ) {
   return graph.invoke(input, {
@@ -400,6 +400,52 @@ describe('createReActGraph', () => {
     expect(executor.calls[0]?.call.callId).toBe(firstCall.callId)
     expect(result.status).toBe(ReActStatus.Failed)
     expect(result.error?.code).toBe('max_tool_rounds')
+  })
+
+  test('P0-5A: 连续两个失败 observation 达到 maxFailures 后停止，不再调用模型或执行额外 Tool', async () => {
+    const runId = 'react-graph-p0-5a'
+    const firstFailedCall: ModelFunctionCall = {
+      callId: 'missing-tool-first-failure',
+      name: 'missing_tool',
+      arguments: JSON.stringify({ value: 'first' }),
+    }
+    const secondFailedCall: ModelFunctionCall = {
+      callId: 'missing-tool-second-failure',
+      name: 'missing_tool',
+      arguments: JSON.stringify({ value: 'second' }),
+    }
+    const { graph, model, provider, executor } = createFixture([
+      requestingTools([firstFailedCall]),
+      requestingTools([secondFailedCall]),
+    ])
+
+    const result = await invokeGraph(graph, {
+      goal: '连续调用不存在的工具',
+      maxFailures: 2,
+    }, runId)
+
+    // 第一条失败 observation 会给模型一次纠正机会；第二条达到预算后直接失败。
+    expect(model.histories).toHaveLength(2)
+    expect(executor.calls).toHaveLength(2)
+    expect(executor.calls.map(call => call.call.callId)).toEqual([
+      firstFailedCall.callId,
+      secondFailedCall.callId,
+    ])
+    expect(provider.calls).toHaveLength(0)
+    expect(result.failureCount).toBe(2)
+    expect(result.status).toBe(ReActStatus.Failed)
+    expect(result.error?.code).toBe('max_failures')
+
+    const firstFailureOutputs = functionCallOutputs(modelHistory(model, 1))
+    expect(firstFailureOutputs).toHaveLength(1)
+    const firstFailure = firstFailureOutputs[0]
+    if (!firstFailure) {
+      throw new Error('Expected the first failed Tool observation')
+    }
+    expect(parseFunctionCallOutput(firstFailure)).toMatchObject({
+      ok: false,
+      error: { code: 'unknown_tool', runId },
+    })
   })
 
   test('P0-6: 无 Tool Call 且 finalText 为空时以 no_candidate_answer 失败', async () => {

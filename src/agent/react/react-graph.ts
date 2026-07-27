@@ -40,6 +40,8 @@ export function createReActGraph(deps: CreateReActGraphDeps) {
     candidateAnswer: z.string().optional(),
     toolRounds: z.number().default(0),
     maxToolRounds: z.number().default(5),
+    failureCount: z.number().default(0),
+    maxFailures: z.number().default(2),
     status: z.enum(ReActStatus).default(ReActStatus.Pending),
     answer: z.string().optional(),
     error: z.object({
@@ -78,6 +80,7 @@ export function createReActGraph(deps: CreateReActGraphDeps) {
           runId,
         })
       }))
+
       return {
         history: fnCalls.map((call) => {
           return {
@@ -94,6 +97,7 @@ export function createReActGraph(deps: CreateReActGraphDeps) {
                 }),
           }
         }),
+        failureCount: state.failureCount + fnCalls.filter(call => !call.ok).length,
         pendingToolCalls: [],
         toolRounds: state.toolRounds + 1,
       }
@@ -164,6 +168,16 @@ export function createReActGraph(deps: CreateReActGraphDeps) {
         }
       }
 
+      if (state.failureCount >= state.maxFailures) {
+        return {
+          ..._state,
+          error: {
+            code: 'max_failures',
+            message: `[${runId}] max failures reached`,
+          },
+        }
+      }
+
       if (state.maxToolRounds <= state.toolRounds) {
         return {
           ..._state,
@@ -188,12 +202,21 @@ export function createReActGraph(deps: CreateReActGraphDeps) {
     })
     .addEdge(START, 'initialize')
     .addEdge('initialize', 'call_model')
-    .addEdge('execute_tools', 'call_model')
     .addEdge('final', END)
+    .addConditionalEdges('execute_tools', async (state) => {
+      if (state.failureCount >= state.maxFailures) {
+        return 'failed'
+      }
+      return 'call_model'
+    })
     .addConditionalEdges('call_model', async (state) => {
       if (state.pendingToolCalls.length) {
-        if (state.maxToolRounds <= state.toolRounds)
+        if (
+          state.maxToolRounds <= state.toolRounds
+          || state.failureCount >= state.maxFailures
+        ) {
           return 'failed'
+        }
         return 'execute_tools'
       }
 
