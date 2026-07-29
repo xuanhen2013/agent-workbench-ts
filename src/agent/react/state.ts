@@ -21,11 +21,14 @@ export interface ReActState {
   status: ReActStatus
   answer?: string
   error?: { code: string, message: string }
+  failureCount: number
+  maxFailures: number
 }
 
 export interface ReActInput {
   goal: string
   maxToolRounds?: number
+  maxFailures?: number
 }
 
 export type ReActOutput = Pick<ReActState, 'status' | 'answer' | 'error'>

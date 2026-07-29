@@ -1,3 +1,4 @@
+import type { BaseCheckpointSaver } from '@langchain/langgraph'
 import type { ReActModel, ToolChoicePolicy } from './model-adapter'
 import type { OpenAIResponseFunctionTool, OpenAIResponseInputItem } from '@/clients/openai'
 import type { ToolExecutor } from '@/tools/_core'
@@ -5,6 +6,10 @@ import { Command, END, ReducedValue, START, StateGraph, StateSchema } from '@lan
 import { z } from 'zod'
 import { removeKnownGatewayMetadata } from './model-adapter'
 import { ReActStatus } from './state'
+
+export interface CreateReActGraphOptions {
+  checkpointer?: BaseCheckpointSaver
+}
 
 export interface CreateReActGraphDeps {
   model: ReActModel
@@ -15,7 +20,10 @@ export interface CreateReActGraphDeps {
   initialToolChoice?: ToolChoicePolicy
 }
 
-export function createReActGraph(deps: CreateReActGraphDeps) {
+export function createReActGraph(
+  deps: CreateReActGraphDeps,
+  options: CreateReActGraphOptions = {},
+) {
   // 返回编译后的 StateGraph
 
   // state
@@ -226,5 +234,7 @@ export function createReActGraph(deps: CreateReActGraphDeps) {
 
       return 'failed'
     })
-    .compile()
+    .compile({
+      checkpointer: options.checkpointer,
+    })
 }
