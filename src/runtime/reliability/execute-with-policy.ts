@@ -70,13 +70,15 @@ export function createInternalError(message: string): AgentCallError {
   })
 }
 
-export async function executeWithPolicy<T>(args: {
+export interface ExecuteWithPolicyArgs<T> {
   policy: CallPolicy
   parentSignal: AbortSignal
   execute: (signal: AbortSignal, attempt: number) => Promise<T>
   classify: (error: unknown) => AgentFailure
   sleep: (ms: number, signal: AbortSignal) => Promise<void>
-}): Promise<T> {
+}
+
+export async function executeWithPolicy<T>(args: ExecuteWithPolicyArgs<T>): Promise<T> {
   if (!Number.isInteger(args.policy.maxAttempts)
     || args.policy.maxAttempts < 1) {
     throw new RangeError('maxAttempts must be at least 1')

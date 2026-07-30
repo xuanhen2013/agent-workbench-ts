@@ -4,7 +4,7 @@ import type { OpenAIResponseFunctionTool, OpenAIResponseInputItem } from '@/clie
 import type { ToolExecutor } from '@/tools/_core'
 import { Command, END, ReducedValue, START, StateGraph, StateSchema } from '@langchain/langgraph'
 import { z } from 'zod'
-import { removeKnownGatewayMetadata } from './model-adapter'
+import { removeKnownGatewayMetadata } from '@/clients/openai'
 import { ReActStatus } from './state'
 
 export interface CreateReActGraphOptions {

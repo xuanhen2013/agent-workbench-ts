@@ -20,6 +20,13 @@ export function AppShell() {
           >
             Joke HITL
           </Link>
+          <Link
+            activeOptions={{ includeSearch: false }}
+            className="nav-link"
+            to="/demos/interview-quiz"
+          >
+            Agent Quiz
+          </Link>
         </div>
       </nav>
       <Outlet />
@@ -46,6 +53,15 @@ export function DemoHome() {
             <p className="eyebrow">LANGGRAPH · HITL</p>
             <h2>Joke Review Agent</h2>
             <p>体验 Checkpoint、Interrupt、动态选项和 Command Resume。</p>
+          </div>
+          <span className="demo-arrow" aria-hidden="true">→</span>
+        </Link>
+        <Link className="demo-card" to="/demos/interview-quiz">
+          <span className="demo-number">05</span>
+          <div>
+            <p className="eyebrow">PLAN · REPLAN · PROMPT CACHE</p>
+            <h2>Agent Interview Quiz</h2>
+            <p>配置难度，完成多轮 Agent 选择题，并观察 RePlan 与缓存指标。</p>
           </div>
           <span className="demo-arrow" aria-hidden="true">→</span>
         </Link>

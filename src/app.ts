@@ -1,11 +1,14 @@
 import type { AppEnv } from '@/http'
+import type { InterviewQuizGraph } from '@/routes/interview-quiz'
 import type { JokeGraph } from '@/routes/jokes'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { logger } from '@/logger'
+import { registerInterviewQuizRoutes } from '@/routes/interview-quiz'
 import { registerJokeRoutes } from '@/routes/jokes'
 
 export interface AppDeps {
+  interviewQuizGraph: InterviewQuizGraph
   jokeGraph: JokeGraph
 }
 
@@ -41,6 +44,7 @@ export function createApp(deps: AppDeps) {
   })
 
   registerJokeRoutes(app, deps.jokeGraph)
+  registerInterviewQuizRoutes(app, deps.interviewQuizGraph)
 
   app.notFound((c) => {
     return c.json({

@@ -3,9 +3,11 @@ import { describe, expect, test } from 'bun:test'
 import { InterruptReason } from '@/agent/interrupt/state'
 import { createApp } from '@/app'
 import { createJokeGraphFixture } from '../helpers/joke'
+import { createQuizGraphFixture } from '../helpers/quiz'
 
 function createFixture() {
   const app = createApp({
+    interviewQuizGraph: createQuizGraphFixture().graph,
     jokeGraph: createJokeGraphFixture().graph,
   })
   return { app }

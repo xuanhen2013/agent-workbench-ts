@@ -56,3 +56,118 @@ export function resumeJoke(
     },
   )
 }
+
+export type QuizDifficulty = 'foundation' | 'intermediate' | 'advanced'
+export type QuizStrategy = 'initial' | 'advance' | 'remediate'
+export type QuizQuestionType = 'single' | 'multiple'
+
+export interface QuizConfig {
+  initialDifficulty: QuizDifficulty
+  maxRounds: number
+}
+
+export interface QuizOption {
+  optionId: string
+  text: string
+}
+
+export interface QuizQuestion {
+  questionId: string
+  type: QuizQuestionType
+  topic: string
+  knowledgePoint: string
+  stem: string
+  options: QuizOption[]
+}
+
+export interface QuizRoundRequest {
+  kind: 'interview_quiz_round'
+  reviewId: string
+  round: number
+  difficulty: QuizDifficulty
+  questionCount: 5
+  questions: QuizQuestion[]
+}
+
+export interface PublicQuizRoundResult {
+  round: number
+  difficulty: QuizDifficulty
+  strategy: QuizStrategy
+  total: 5
+  correctCount: number
+  allCorrect: boolean
+  wrongKnowledgePoints: string[]
+  questionResults: Array<{
+    questionId: string
+    type: QuizQuestionType
+    topic: string
+    knowledgePoint: string
+    stem: string
+    selectedOptions: QuizOption[]
+    isCorrect: boolean
+  }>
+  modelUsage?: {
+    inputTokens: number
+    cachedTokens: number
+    cacheWriteTokens: number
+  }
+}
+
+export interface QuizRoundResultRequest {
+  kind: 'interview_quiz_round_result'
+  reviewId: string
+  result: PublicQuizRoundResult
+}
+
+export interface InterviewQuizView {
+  threadId: string
+  status: 'needs_answers' | 'round_result' | 'completed' | 'failed'
+  config: QuizConfig
+  waitingQuestions?: QuizRoundRequest
+  waitingResult?: QuizRoundResultRequest
+  results: PublicQuizRoundResult[]
+  error?: { code: string, message: string }
+}
+
+export function createInterviewQuiz(config: QuizConfig) {
+  return request<InterviewQuizView>('/api/interview-quiz', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+}
+
+export function getInterviewQuiz(threadId: string) {
+  return request<InterviewQuizView>(
+    `/api/interview-quiz/${encodeURIComponent(threadId)}`,
+  )
+}
+
+export function submitInterviewQuizAnswers(
+  threadId: string,
+  reviewId: string,
+  answers: Array<{ questionId: string, selectedOptionIds: string[] }>,
+) {
+  return request<InterviewQuizView>(
+    `/api/interview-quiz/${encodeURIComponent(threadId)}/answers`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reviewId, answers }),
+    },
+  )
+}
+
+export function continueInterviewQuiz(
+  threadId: string,
+  reviewId: string,
+) {
+  return request<InterviewQuizView>(
+    `/api/interview-quiz/${encodeURIComponent(threadId)}/next`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reviewId, action: 'next_round' }),
+    },
+  )
+}

@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { createApp } from '@/app'
 import { createJokeGraphFixture } from '../helpers/joke'
+import { createQuizGraphFixture } from '../helpers/quiz'
 
 function testApp() {
   return createApp({
+    interviewQuizGraph: createQuizGraphFixture().graph,
     jokeGraph: createJokeGraphFixture().graph,
   })
 }
