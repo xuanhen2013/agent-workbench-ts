@@ -149,20 +149,20 @@ export interface QuizPlannerInput {
   retrievedChunks: RetrievedChunk[]
 }
 
-export type QuizPlanResult =
-  | {
-      ok: true
-      draft: QuizRoundDraft
-      continuationItems: OpenAIResponseInputItem[]
+export type QuizPlanResult
+  = | {
+    ok: true
+    draft: QuizRoundDraft
+    continuationItems: OpenAIResponseInputItem[]
 
-      // Graph 预取 + 两个 Tool 在本轮实际返回的有界 Chunk。
-      retrievedChunks: RetrievedChunk[]
-      usage?: QuizModelUsage
-    }
+    // Graph 预取 + 两个 Tool 在本轮实际返回的有界 Chunk。
+    retrievedChunks: RetrievedChunk[]
+    usage?: QuizModelUsage
+  }
   | {
-      ok: false
-      error: QuizPlanError
-    }
+    ok: false
+    error: QuizPlanError
+  }
 ```
 
 Planner 必须返回本轮实际见过的 Chunk。Graph 和 Validator 不能根据模型输出猜测它查过什么。
@@ -241,10 +241,12 @@ Composition Root 明确决定装配和离线回退：
 
 ```ts
 const questionSignalRetriever = localKnowledgeRetriever
-const answerEvidenceRetriever =
-  cloudflareAnswerEvidenceRetriever ?? localKnowledgeRetriever
+const answerEvidenceRetriever
+  = cloudflareAnswerEvidenceRetriever ?? localKnowledgeRetriever
 
-const planner = new QuizPlanner(client, model, {
+const openAIExecutor = createOpenAIResponsesExecutor()
+
+const planner = new QuizPlanner(openAIExecutor, {
   skillCatalog,
   questionSignalRetriever,
   answerEvidenceRetriever,
@@ -256,6 +258,8 @@ const graph = createInterviewQuizGraph({
   questionSignalRetriever,
 })
 ```
+
+默认 `model`、`store` 和可选 `reasoning` 已由 `openAIExecutor` 在 Provider 边界统一配置；Planner 只负责本次 Workflow 的 Prompt、Tool、Structured Output 和缓存键。
 
 如果后面把 `interview-bank` 上传到 Cloudflare，只替换 `questionSignalRetriever` 的 Adapter，不改 Planner、Tool 或 Graph。
 
@@ -346,7 +350,7 @@ export const AGENT_QUIZ_PROMPT_CACHE_KEY = 'agent-interview-quiz:v3'
 
 这些变量只存在于一次 `createRound()`，不进入 Graph State：
 
-```ts
+```text
 let plannerConversation = [
   skillCatalogItem,
   ...input.history,

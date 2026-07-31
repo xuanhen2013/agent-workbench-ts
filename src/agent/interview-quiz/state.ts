@@ -63,6 +63,9 @@ export const InterviewQuizStateSchema = new StateSchema({
   /** 当前轮检索结果快照；固定预取和 Planner Tool 都只服务当前轮。 */
   retrievedChunks: z.custom<RetrievedChunk[]>().default(() => []),
 
+  /** QuestionBank 为当前轮返回的有限历史题干；不包含答案和完整题库。 */
+  questionBankStems: z.array(z.string()).default(() => []),
+
   /** 已完成轮次。verify 每次只返回一个新元素，由 Reducer 追加。 */
   rounds: new ReducedValue(
     z.array(z.custom<QuizRoundRecord>()).default(() => []),

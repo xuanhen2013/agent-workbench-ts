@@ -10,6 +10,7 @@ import {
 } from '@/agent/interview-quiz/execution'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
+import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import {
   createQuizGraphFixture,
   FakeKnowledgeRetriever,
@@ -43,6 +44,7 @@ describe('Interview Quiz Graph RAG', () => {
       checkpointer: new MemorySaver(),
       planner,
       questionSignalRetriever: knowledgeRetriever,
+      questionBank: new InMemoryQuestionBank(),
     })
     const threadId = 'quiz-rag-thread'
 
@@ -74,6 +76,7 @@ describe('Interview Quiz Graph RAG', () => {
           return []
         },
       },
+      questionBank: new InMemoryQuestionBank(),
     })
     const threadId = 'quiz-rag-no-evidence-thread'
 
@@ -98,6 +101,7 @@ describe('Interview Quiz Graph RAG', () => {
       checkpointer: new MemorySaver(),
       planner,
       questionSignalRetriever,
+      questionBank: new InMemoryQuestionBank(),
     })
     const threadId = 'quiz-rag-split-retriever-thread'
 

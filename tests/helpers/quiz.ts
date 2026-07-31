@@ -1,4 +1,3 @@
-import type OpenAI from 'openai'
 import type {
   QuizRoundDraft,
   QuizRoundPlan,
@@ -8,7 +7,10 @@ import type {
   QuizPlannerInput,
   QuizPlanResult,
 } from '@/agent/interview-quiz/planning'
-import type { OpenAIResponseInputItem } from '@/clients/openai'
+import type {
+  OpenAIResponseInputItem,
+  OpenAIResponsesExecutor,
+} from '@/clients/openai'
 import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import {
@@ -22,6 +24,7 @@ import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
+import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 
 export function createQuizDraft(
   round = 1,
@@ -130,7 +133,7 @@ export class FakeQuizPlanner extends QuizPlanner {
   readonly calls: QuizPlannerInput[] = []
 
   constructor() {
-    super({} as OpenAI, 'fake-model', {
+    super({} as OpenAIResponsesExecutor, {
       skillCatalog: [],
       questionSignalRetriever: unusedKnowledgeRetriever,
       answerEvidenceRetriever: unusedKnowledgeRetriever,
@@ -198,12 +201,14 @@ export class FakeKnowledgeRetriever {
 export function createQuizGraphFixture() {
   const planner = new FakeQuizPlanner()
   const knowledgeRetriever = new FakeKnowledgeRetriever()
+  const questionBank = new InMemoryQuestionBank()
   const graph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
     planner,
     questionSignalRetriever: knowledgeRetriever,
+    questionBank,
   })
-  return { graph, planner, knowledgeRetriever }
+  return { graph, planner, knowledgeRetriever, questionBank }
 }
 
 export function correctSubmission(request: QuizRoundRequest) {

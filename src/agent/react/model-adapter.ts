@@ -1,10 +1,13 @@
-import type OpenAI from 'openai'
-import type { OpenAIResponse, OpenAIResponseFunctionTool, OpenAIResponseInputItem } from '@/clients/openai'
+import type {
+  OpenAIResponse,
+  OpenAIResponseFunctionTool,
+  OpenAIResponseInputItem,
+  OpenAIResponsesExecutor,
+} from '@/clients/openai'
 import {
   toResponseInputItems,
 } from 'openai/lib/responses/ResponseInputItems'
 import {
-  OpenAIResponsesExecutor,
   removeKnownGatewayMetadata,
 } from '@/clients/openai'
 
@@ -66,12 +69,10 @@ export function toModelTurn(
 }
 
 export class OpenAIResponsesModel implements ReActModel {
-  private readonly model: string
   private readonly executor: OpenAIResponsesExecutor
 
-  constructor(client: OpenAI, model: string) {
-    this.model = model
-    this.executor = new OpenAIResponsesExecutor({ client })
+  constructor(executor: OpenAIResponsesExecutor) {
+    this.executor = executor
   }
 
   async runTurn(input: {
@@ -82,7 +83,6 @@ export class OpenAIResponsesModel implements ReActModel {
     toolChoice?: ToolChoicePolicy
   }): Promise<ModelTurn> {
     const response = await this.executor.runNoStream({
-      model: this.model,
       instructions: input.instructions,
       input: input.history,
       tools: input.tools,

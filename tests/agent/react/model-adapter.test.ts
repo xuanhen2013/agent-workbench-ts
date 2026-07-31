@@ -9,6 +9,10 @@ import {
   OpenAIResponsesModel,
   toModelTurn,
 } from '@/agent/react/model-adapter'
+import {
+  OpenAIResponsesExecutor,
+  parseOpenAIReasoningEffort,
+} from '@/clients/openai'
 import { AgentCallError, FailureCode, FailureKind } from '@/runtime'
 
 function response(outputText = 'Model completed the turn'): OpenAIResponse {
@@ -27,6 +31,24 @@ function fakeClient(create: (request: unknown, options: unknown) => Promise<Open
     responses: { create },
   } as unknown as OpenAI
 }
+
+function createModel(
+  client: OpenAI,
+  reasoning?: OpenAIResponseCreateReasoning,
+) {
+  return new OpenAIResponsesModel(new OpenAIResponsesExecutor({
+    client,
+    defaults: {
+      model: 'fake-model',
+      store: false,
+      ...(reasoning ? { reasoning } : {}),
+    },
+  }))
+}
+
+type OpenAIResponseCreateReasoning = NonNullable<
+  OpenAI.Responses.ResponseCreateParamsNonStreaming['reasoning']
+>
 
 function modelInput(signal: AbortSignal, toolChoice: 'auto' | 'none' | 'required' = 'auto') {
   return {
@@ -56,6 +78,55 @@ async function advanceRetryDelay(ms: number) {
 }
 
 describe('OpenAIResponsesModel reliability', () => {
+  test('Provider 默认 model、store 和 reasoning 进入 Responses 请求', async () => {
+    expect(parseOpenAIReasoningEffort(undefined)).toBeUndefined()
+    expect(parseOpenAIReasoningEffort(' high ')).toBe('high')
+    expect(() => parseOpenAIReasoningEffort('extreme')).toThrow(
+      'Invalid OPENAI_DEFAULT_REASONING_EFFORT',
+    )
+
+    let receivedRequest: Record<string, unknown> | undefined
+    const model = createModel(fakeClient(async (request) => {
+      receivedRequest = request as Record<string, unknown>
+      return response()
+    }), { effort: 'high' })
+
+    await model.runTurn(modelInput(new AbortController().signal))
+
+    expect(receivedRequest?.model).toBe('fake-model')
+    expect(receivedRequest?.store).toBe(false)
+    expect(receivedRequest?.reasoning).toEqual({ effort: 'high' })
+  })
+
+  test('单次请求可以覆盖 Provider 默认值，并合并 reasoning 字段', async () => {
+    let receivedRequest: Record<string, unknown> | undefined
+    const executor = new OpenAIResponsesExecutor({
+      client: fakeClient(async (request) => {
+        receivedRequest = request as Record<string, unknown>
+        return response()
+      }),
+      defaults: {
+        model: 'default-model',
+        store: false,
+        reasoning: { effort: 'medium', summary: 'auto' },
+      },
+    })
+
+    await executor.runNoStream({
+      model: 'override-model',
+      store: true,
+      reasoning: { effort: 'high' },
+      input: 'test',
+    }, { signal: new AbortController().signal })
+
+    expect(receivedRequest).toMatchObject({
+      model: 'override-model',
+      store: true,
+      reasoning: { effort: 'high', summary: 'auto' },
+      stream: false,
+    })
+  })
+
   test('toModelTurn 去除兼容网关附加的 index 后再续传', () => {
     const turn = toModelTurn({
       output: [{
@@ -84,7 +155,7 @@ describe('OpenAIResponsesModel reliability', () => {
     let createCalls = 0
     const requests: Array<Record<string, unknown>> = []
     const requestOptions: Array<Record<string, unknown>> = []
-    const model = new OpenAIResponsesModel(fakeClient(async (request, options) => {
+    const model = createModel(fakeClient(async (request, options) => {
       createCalls += 1
       requests.push(request as Record<string, unknown>)
       requestOptions.push(options as Record<string, unknown>)
@@ -93,7 +164,7 @@ describe('OpenAIResponsesModel reliability', () => {
       }
 
       return response()
-    }), 'fake-model')
+    }))
 
     try {
       const operation = model.runTurn(modelInput(new AbortController().signal, 'required'))
@@ -123,14 +194,14 @@ describe('OpenAIResponsesModel reliability', () => {
   test('429 可重试，并在第二次 SDK create 成功时完成 turn', async () => {
     vi.useFakeTimers()
     let createCalls = 0
-    const model = new OpenAIResponsesModel(fakeClient(async () => {
+    const model = createModel(fakeClient(async () => {
       createCalls += 1
       if (createCalls === 1) {
         throw statusError(429)
       }
 
       return response()
-    }), 'fake-model')
+    }))
 
     try {
       const operation = model.runTurn(modelInput(new AbortController().signal))
@@ -149,10 +220,10 @@ describe('OpenAIResponsesModel reliability', () => {
 
   test('400 归类为 InvalidInput，且不会重试', async () => {
     let createCalls = 0
-    const model = new OpenAIResponsesModel(fakeClient(async () => {
+    const model = createModel(fakeClient(async () => {
       createCalls += 1
       throw statusError(400)
-    }), 'fake-model')
+    }))
 
     try {
       await model.runTurn(modelInput(new AbortController().signal))
@@ -168,10 +239,10 @@ describe('OpenAIResponsesModel reliability', () => {
   test('401 与未知错误归类为 Internal，且不会重试', async () => {
     for (const error of [statusError(401), new Error('sensitive unknown error')]) {
       let createCalls = 0
-      const model = new OpenAIResponsesModel(fakeClient(async () => {
+      const model = createModel(fakeClient(async () => {
         createCalls += 1
         throw error
-      }), 'fake-model')
+      }))
 
       try {
         await model.runTurn(modelInput(new AbortController().signal))
@@ -190,11 +261,11 @@ describe('OpenAIResponsesModel reliability', () => {
     const parentController = new AbortController()
     let createCalls = 0
     let receivedSignal: AbortSignal | undefined
-    const model = new OpenAIResponsesModel(fakeClient(async (_request, options) => {
+    const model = createModel(fakeClient(async (_request, options) => {
       createCalls += 1
       receivedSignal = (options as { signal: AbortSignal }).signal
       return await new Promise<never>(() => {})
-    }), 'fake-model')
+    }))
 
     const operation = model.runTurn(modelInput(parentController.signal))
 
@@ -220,10 +291,10 @@ describe('OpenAIResponsesModel reliability', () => {
       output: {},
       output_text: 'This response is malformed.',
     } as unknown as OpenAIResponse
-    const model = new OpenAIResponsesModel(fakeClient(async () => {
+    const model = createModel(fakeClient(async () => {
       createCalls += 1
       return malformedResponse
-    }), 'fake-model')
+    }))
 
     await expect(model.runTurn(modelInput(new AbortController().signal))).rejects.toThrow()
 

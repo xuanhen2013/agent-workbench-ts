@@ -6,7 +6,7 @@ import { createInterruptGraph } from '@/agent/interrupt/interrupt-graph'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
 import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
-import { createOpenAIModelClient } from '@/clients/openai'
+import { createOpenAIResponsesExecutor } from '@/clients/openai'
 import { createCloudflareAiSearchRetrieverFromEnv } from '@/knowledge/cloudflare-ai-search'
 import {
   KnowledgeEvidenceRole,
@@ -19,6 +19,8 @@ import {
   InMemoryKnowledgeStore,
 } from '@/knowledge/in-memory-rag'
 import { loadInterviewBankDocuments } from '@/knowledge/interview-bank-loader'
+import { createCloudflareD1QuestionBankFromEnv } from '@/question-bank/cloudflare-d1-question-bank'
+import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import { loadSkillCatalog } from '@/skills/skill-loader'
 
 /** 正式进程只创建一次 Graph 和 MemorySaver，所有 Joke Route 共享同一状态仓库。 */
@@ -86,20 +88,29 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
   const questionSignalRetriever = knowledgeRetriever
   const answerEvidenceRetriever
     = cloudflareAnswerEvidenceRetriever ?? knowledgeRetriever
+  const cloudflareQuestionBank
+    = createCloudflareD1QuestionBankFromEnv(process.env)
+  const questionBank = cloudflareQuestionBank ?? new InMemoryQuestionBank()
+  if (cloudflareQuestionBank) {
+    await cloudflareQuestionBank.initialize({
+      signal: new AbortController().signal,
+    })
+  }
 
-  const { client, model } = createOpenAIModelClient()
+  const openAIExecutor = createOpenAIResponsesExecutor()
   const jokeGraph = createInterruptGraph({
     checkpointer: new MemorySaver(),
-    model: new OpenAIResponsesModel(client, model),
+    model: new OpenAIResponsesModel(openAIExecutor),
   })
   const interviewQuizGraph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
-    planner: new QuizPlanner(client, model, {
+    planner: new QuizPlanner(openAIExecutor, {
       skillCatalog,
       questionSignalRetriever,
       answerEvidenceRetriever,
     }),
     questionSignalRetriever,
+    questionBank,
   })
 
   return { interviewQuizGraph, jokeGraph }

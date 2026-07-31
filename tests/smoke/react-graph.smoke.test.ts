@@ -4,7 +4,7 @@ import { expect, test } from 'bun:test'
 import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
 import { createReActGraph } from '@/agent/react/react-graph'
 import { ReActStatus } from '@/agent/react/state'
-import { createOpenAIModelClient } from '@/clients/openai'
+import { createOpenAIResponsesExecutor } from '@/clients/openai'
 import { ToolExecutor, ToolRegistry } from '@/tools/_core'
 import { toResponseTool } from '@/tools/_core/adapters/openai-response'
 import { createWeatherTool, getCurrentWeather } from '@/tools/weather'
@@ -12,11 +12,17 @@ import { createWeatherTool, getCurrentWeather } from '@/tools/weather'
 const requiredModelEnvironment = [
   'OPENAI_BASE_URL',
   'OPENAI_API_KEY',
-  'OPENAI_DEFAULT_MODAL',
 ] as const
 
 function assertSmokeEnvironment(): void {
-  const missing = requiredModelEnvironment.filter(name => !process.env[name]?.trim())
+  const missing: string[] = requiredModelEnvironment
+    .filter(name => !process.env[name]?.trim())
+  if (
+    !process.env.OPENAI_DEFAULT_MODEL?.trim()
+    && !process.env.OPENAI_DEFAULT_MODAL?.trim()
+  ) {
+    missing.push('OPENAI_DEFAULT_MODEL')
+  }
   if (missing.length > 0) {
     throw new Error(`React graph smoke test requires configured environment variables: ${missing.join(', ')}`)
   }
@@ -40,9 +46,9 @@ test('真实 Responses API、LangGraph 和 WeatherTool 完成一次 ReAct 天气
   const registry = new ToolRegistry()
   registry.register(weatherTool)
   const executor = new ToolExecutor(registry)
-  const { client, model: modelName } = createOpenAIModelClient(process.env)
+  const modelExecutor = createOpenAIResponsesExecutor(process.env)
   const graph = createReActGraph({
-    model: new OpenAIResponsesModel(client, modelName),
+    model: new OpenAIResponsesModel(modelExecutor),
     executor,
     tools: [toResponseTool(weatherTool)],
     initialToolChoice: 'required',

@@ -41,6 +41,7 @@ describe('Interview Quiz API', () => {
     expect(created.waitingQuestions?.questions).toHaveLength(5)
     expect(JSON.stringify(created)).not.toContain('correctOptionIds')
     expect(JSON.stringify(created)).not.toContain('explanation')
+    expect(JSON.stringify(created)).not.toContain('bankQuestionId')
 
     const firstQuestions = created.waitingQuestions
     if (!firstQuestions)

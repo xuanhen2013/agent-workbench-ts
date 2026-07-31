@@ -13,12 +13,17 @@ import { createDefaultAppDeps } from '@/composition-root'
 const requiredModelEnvironment = [
   'OPENAI_BASE_URL',
   'OPENAI_API_KEY',
-  'OPENAI_DEFAULT_MODAL',
 ] as const
 
 function assertSmokeEnvironment() {
-  const missing = requiredModelEnvironment
+  const missing: string[] = requiredModelEnvironment
     .filter(name => !process.env[name]?.trim())
+  if (
+    !process.env.OPENAI_DEFAULT_MODEL?.trim()
+    && !process.env.OPENAI_DEFAULT_MODAL?.trim()
+  ) {
+    missing.push('OPENAI_DEFAULT_MODEL')
+  }
   if (missing.length > 0) {
     throw new Error(
       `Interview Quiz smoke test requires: ${missing.join(', ')}`,

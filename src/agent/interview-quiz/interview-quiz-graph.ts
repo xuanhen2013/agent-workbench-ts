@@ -2,6 +2,7 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph'
 import type { QuizPlanner } from './planning'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
 import type { KnowledgeRetriever } from '@/knowledge/contracts'
+import type { QuestionBank } from '@/question-bank/contracts'
 import {
   END,
   interrupt,
@@ -26,6 +27,7 @@ import {
   QuizNextRoundDecisionSchema,
   validateSubmission,
 } from './execution'
+import { MAX_FORBIDDEN_QUESTION_STEMS } from './planning'
 import { InterviewQuizStateSchema } from './state'
 
 export interface CreateInterviewQuizGraphOptions {
@@ -33,6 +35,8 @@ export interface CreateInterviewQuizGraphOptions {
   planner: Pick<QuizPlanner, 'createRound' | 'materializeRoundPlan'>
   /** Graph 首次固定预取 question_signal；追加检索由 Planner Tool 负责。 */
   questionSignalRetriever: Pick<KnowledgeRetriever, 'search'>
+  /** Graph 确定性读写正式题库，不把它暴露为模型 Tool。 */
+  questionBank: QuestionBank
 }
 
 function raiseDifficulty(difficulty: QuizDifficulty) {
@@ -112,7 +116,43 @@ export function createInterviewQuizGraph(
         roundContext,
         modelHistory: [buildRoundMessage(roundContext)],
         retrievedChunks: [],
+        questionBankStems: [],
         status: InterviewQuizStatus.Planning,
+      }
+    })
+    .addNode('load_question_history', async (state, { signal }) => {
+      if (!state.roundContext) {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundContextMissing,
+          ),
+        }
+      }
+
+      const wrongKnowledgePoints = state.roundContext.strategy
+        === QuizStrategy.Remediate
+        ? state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []
+        : []
+
+      try {
+        return {
+          questionBankStems: await options.questionBank.findRecentStems({
+            difficulty: state.roundContext.difficulty,
+            knowledgePoints: wrongKnowledgePoints,
+            limit: 30,
+            signal,
+          }),
+          status: InterviewQuizStatus.Planning,
+        }
+      }
+      catch {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.QuestionBankReadFailed,
+          ),
+        }
       }
     })
     .addNode('retrieve_question_signals', async (state, { signal }) => {
@@ -160,12 +200,16 @@ export function createInterviewQuizGraph(
         }
       }
 
+      const currentThreadStems = state.rounds.flatMap(record => (
+        record.plan.questions.map(question => question.stem)
+      ))
       const plannerInput = {
         history: state.modelHistory,
         ...state.roundContext,
-        previousQuestionStems: state.rounds.flatMap(record => (
-          record.plan.questions.map(question => question.stem)
-        )),
+        previousQuestionStems: [...new Set([
+          ...currentThreadStems,
+          ...state.questionBankStems,
+        ])].slice(0, MAX_FORBIDDEN_QUESTION_STEMS),
         retrievedChunks: state.retrievedChunks,
       }
 
@@ -195,7 +239,7 @@ export function createInterviewQuizGraph(
           }),
           submission: null,
           currentModelUsage: result.usage ?? null,
-          status: InterviewQuizStatus.WaitingForAnswers,
+          status: InterviewQuizStatus.Planning,
         }
       }
       catch {
@@ -203,6 +247,34 @@ export function createInterviewQuizGraph(
           status: InterviewQuizStatus.Failed,
           error: createInterviewQuizError(
             InterviewQuizErrorCode.PlannerCallFailed,
+          ),
+        }
+      }
+    })
+    .addNode('persist_questions', async (state, { signal }) => {
+      if (!state.currentPlan) {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundPlanMissing,
+          ),
+        }
+      }
+
+      try {
+        return {
+          currentPlan: await options.questionBank.savePlan(
+            state.currentPlan,
+            { signal },
+          ),
+          status: InterviewQuizStatus.WaitingForAnswers,
+        }
+      }
+      catch {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.QuestionBankSaveFailed,
           ),
         }
       }
@@ -320,6 +392,7 @@ export function createInterviewQuizGraph(
         submission: null,
         currentModelUsage: null,
         retrievedChunks: [],
+        questionBankStems: [],
         status: InterviewQuizStatus.Planning,
       }
     })
@@ -328,11 +401,21 @@ export function createInterviewQuizGraph(
       completionReason: QuizCompletionReason.MaxRounds,
     }))
     .addEdge(START, 'initialize')
-    .addEdge('initialize', 'retrieve_question_signals')
+    .addEdge('initialize', 'load_question_history')
+    .addConditionalEdges('load_question_history', state => (
+      state.status === InterviewQuizStatus.Failed
+        ? END
+        : 'retrieve_question_signals'
+    ))
     .addConditionalEdges('retrieve_question_signals', state => (
       state.status === InterviewQuizStatus.Failed ? END : 'plan_execute'
     ))
     .addConditionalEdges('plan_execute', state => (
+      state.status === InterviewQuizStatus.Failed
+        ? END
+        : 'persist_questions'
+    ))
+    .addConditionalEdges('persist_questions', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
         : 'answer_questions'
@@ -353,7 +436,7 @@ export function createInterviewQuizGraph(
     .addConditionalEdges('wait_next_round', state => (
       state.status === InterviewQuizStatus.Failed ? END : 'replan'
     ))
-    .addEdge('replan', 'retrieve_question_signals')
+    .addEdge('replan', 'load_question_history')
     .addEdge('finish', END)
     .compile({ checkpointer: options.checkpointer })
 }

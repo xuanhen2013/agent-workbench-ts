@@ -16,10 +16,13 @@ import {
   AGENT_QUIZ_INSTRUCTIONS,
   AGENT_QUIZ_PROMPT_CACHE_KEY,
   MAX_ANSWER_EVIDENCE_SEARCHES,
+  MAX_FORBIDDEN_QUESTION_STEMS,
   MAX_PLANNER_TOOL_ROUNDS,
   MAX_QUESTION_SIGNAL_SEARCHES,
   QuizPlanner,
+  renderForbiddenQuestionStems,
 } from '@/agent/interview-quiz/planning'
+import { OpenAIResponsesExecutor } from '@/clients/openai'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
@@ -264,6 +267,23 @@ function fakeClient(
   } as unknown as OpenAI
 }
 
+function fakeExecutor(
+  responses: readonly OpenAIResponse[],
+  capture?: (params: Record<string, unknown>) => void,
+  reasoning?: NonNullable<
+    OpenAI.Responses.ResponseCreateParamsNonStreaming['reasoning']
+  >,
+) {
+  return new OpenAIResponsesExecutor({
+    client: fakeClient(responses, capture),
+    defaults: {
+      model: 'fake-model',
+      store: false,
+      ...(reasoning ? { reasoning } : {}),
+    },
+  })
+}
+
 function validPlannerInput(): QuizPlannerInput {
   return {
     history: [{
@@ -293,8 +313,7 @@ function createPlanner(
   catalog: readonly SkillCatalogEntry[] = skillCatalog,
 ) {
   return new QuizPlanner(
-    fakeClient(responses),
-    'fake-model',
+    fakeExecutor(responses),
     plannerOptions(catalog),
   )
 }
@@ -318,6 +337,27 @@ function expectPlannerError(
 }
 
 describe('QuizPlanner', () => {
+  test('历史题干以有界负向列表进入模型，不携带私有题目字段', () => {
+    const stems = Array.from(
+      { length: MAX_FORBIDDEN_QUESTION_STEMS + 5 },
+      (_, index) => `历史题干 ${index + 1}`,
+    )
+    stems.splice(1, 0, '  历史题干 1  ')
+
+    const rendered = renderForbiddenQuestionStems(stems)
+    const serialized = rendered
+      .replace(/^<forbidden_question_stems>\n[^\n]+\n/, '')
+      .replace(/\n<\/forbidden_question_stems>$/, '')
+    const parsed = JSON.parse(serialized) as string[]
+
+    expect(parsed).toHaveLength(MAX_FORBIDDEN_QUESTION_STEMS)
+    expect(parsed[0]).toBe('历史题干 1')
+    expect(parsed.at(-1)).toBe(`历史题干 ${MAX_FORBIDDEN_QUESTION_STEMS}`)
+    expect(rendered).toContain('不是示范')
+    expect(rendered).not.toContain('correctOptionIds')
+    expect(rendered).not.toContain('explanation')
+  })
+
   test('完整 Skill Trace 后生成合法五题并只保留最终 continuation', async () => {
     const draft = createQuizDraft(2)
     const result = await createRound(JSON.stringify(draft))
@@ -349,9 +389,13 @@ describe('QuizPlanner', () => {
     const requests: Array<Record<string, unknown>> = []
     const draft = createQuizDraft(2)
     const input = validPlannerInput()
+    input.previousQuestionStems = ['旧题：Agent Loop 的职责是什么？']
     const planner = new QuizPlanner(
-      fakeClient(skillTrace(JSON.stringify(draft)), params => requests.push(params)),
-      'fake-model',
+      fakeExecutor(
+        skillTrace(JSON.stringify(draft)),
+        params => requests.push(params),
+        { effort: 'medium' },
+      ),
       plannerOptions(),
     )
 
@@ -365,9 +409,10 @@ describe('QuizPlanner', () => {
       prompt_cache_key: AGENT_QUIZ_PROMPT_CACHE_KEY,
       tool_choice: 'auto',
       parallel_tool_calls: true,
+      reasoning: { effort: 'medium' },
       store: false,
     })
-    expect(AGENT_QUIZ_PROMPT_CACHE_KEY).toBe('agent-interview-quiz:v3')
+    expect(AGENT_QUIZ_PROMPT_CACHE_KEY).toBe('agent-interview-quiz:v4')
     expect(AGENT_QUIZ_PROMPT_CACHE_KEY).not.toContain('thread')
 
     const firstInput = requests[0]!.input as Array<Record<string, unknown>>
@@ -380,10 +425,11 @@ describe('QuizPlanner', () => {
     expect(firstInput[1]).toEqual(
       input.history[0] as unknown as Record<string, unknown>,
     )
-    expect(firstInput[2]).toMatchObject({
-      role: 'user',
-      content: expect.stringContaining('<retrieved_knowledge>'),
-    })
+    const planningContext = String(firstInput[2]!.content)
+    expect(firstInput[2]!.role).toBe('user')
+    expect(planningContext).toContain('<retrieved_knowledge>')
+    expect(planningContext).toContain('<forbidden_question_stems>')
+    expect(planningContext).toContain('旧题：Agent Loop 的职责是什么？')
 
     const secondInput = requests[1]!.input as Array<Record<string, unknown>>
     expect(secondInput.filter(item => item.type === 'function_call')).toHaveLength(1)
@@ -410,14 +456,13 @@ describe('QuizPlanner', () => {
     const questionSignalRetriever = new FakePlannerKnowledgeRetriever()
     const answerEvidenceRetriever = new FakePlannerKnowledgeRetriever()
     const planner = new QuizPlanner(
-      fakeClient([
+      fakeExecutor([
         loadBothSkillsResponse(),
         readResourcesResponse(),
         searchQuestionSignalResponse(),
         searchAnswerEvidenceResponse(),
         finalResponse(JSON.stringify(draft)),
       ], params => requests.push(params)),
-      'fake-model',
       {
         skillCatalog: knowledgeSkillCatalog,
         questionSignalRetriever,
@@ -469,8 +514,7 @@ describe('QuizPlanner', () => {
       }),
     )
     const planner = new QuizPlanner(
-      fakeClient([loadSkillResponse(), functionCallResponse(calls)]),
-      'fake-model',
+      fakeExecutor([loadSkillResponse(), functionCallResponse(calls)]),
       {
         skillCatalog,
         questionSignalRetriever,
@@ -500,8 +544,7 @@ describe('QuizPlanner', () => {
       }),
     )
     const planner = new QuizPlanner(
-      fakeClient([loadSkillResponse(), functionCallResponse(calls)]),
-      'fake-model',
+      fakeExecutor([loadSkillResponse(), functionCallResponse(calls)]),
       {
         skillCatalog,
         questionSignalRetriever: new FakePlannerKnowledgeRetriever(),
@@ -527,8 +570,7 @@ describe('QuizPlanner', () => {
       },
     }
     const planner = new QuizPlanner(
-      fakeClient([loadSkillResponse(), searchAnswerEvidenceResponse()]),
-      'fake-model',
+      fakeExecutor([loadSkillResponse(), searchAnswerEvidenceResponse()]),
       {
         skillCatalog,
         questionSignalRetriever: new FakePlannerKnowledgeRetriever(),
@@ -576,7 +618,7 @@ describe('QuizPlanner', () => {
       sourceChunkIds: ['answer-evidence:0'],
     }))
     const planner = new QuizPlanner(
-      fakeClient([
+      fakeExecutor([
         loadSkillResponse(),
         searchQuestionSignalResponse(),
         searchAnswerEvidenceResponse('answer-search-1'),
@@ -584,7 +626,6 @@ describe('QuizPlanner', () => {
         searchAnswerEvidenceResponse('answer-search-3'),
         finalResponse(JSON.stringify(draft)),
       ], params => requests.push(params)),
-      'fake-model',
       {
         skillCatalog,
         questionSignalRetriever: new BatchedKnowledgeRetriever([extraSignals]),
