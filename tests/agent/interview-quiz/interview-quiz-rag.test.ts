@@ -112,6 +112,51 @@ describe('Interview Quiz Graph RAG', () => {
     })
   })
 
+  test('可将远程答案证据 Retriever 与本地 question_signal Retriever 分开', async () => {
+    const planner = new FakeQuizPlanner()
+    const questionSignalRetriever = new FakeKnowledgeRetriever()
+    const answerEvidenceRetriever = {
+      calls: 0,
+      async search(input: Parameters<FakeKnowledgeRetriever['search']>[0]) {
+        input.signal.throwIfAborted()
+        this.calls += 1
+        return [{
+          chunkId: 'remote:answer-evidence',
+          documentId: 'remote:document',
+          sourceType: KnowledgeSourceType.Official,
+          evidenceRole: KnowledgeEvidenceRole.AnswerEvidence,
+          title: 'Remote evidence',
+          sourceUri: 'cloudflare-ai-search:remote',
+          heading: 'Remote',
+          text: 'Remote verified answer evidence.',
+          ordinal: 0,
+          score: 0.9,
+        }]
+      },
+    }
+    const graph = createInterviewQuizGraph({
+      checkpointer: new MemorySaver(),
+      planner,
+      knowledgeRetriever: questionSignalRetriever,
+      answerEvidenceRetriever,
+    })
+    const threadId = 'quiz-rag-split-retriever-thread'
+
+    await graph.invoke({
+      threadId,
+      config: {
+        initialDifficulty: QuizDifficulty.Foundation,
+        maxRounds: 1,
+      },
+    }, config(threadId))
+
+    findRoundRequest(await graph.getState(config(threadId)))
+    expect(questionSignalRetriever.calls).toHaveLength(1)
+    expect(answerEvidenceRetriever.calls).toBe(1)
+    expect(planner.calls[0]?.retrievedChunks[1]?.sourceUri)
+      .toBe('cloudflare-ai-search:remote')
+  })
+
   test('RePlan 检索 Query 会携带上一轮错误知识点', async () => {
     const { graph, knowledgeRetriever } = createQuizGraphFixture()
     const threadId = 'quiz-rag-replan-thread'

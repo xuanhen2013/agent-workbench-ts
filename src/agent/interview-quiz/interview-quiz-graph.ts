@@ -31,7 +31,13 @@ import { InterviewQuizStateSchema } from './state'
 export interface CreateInterviewQuizGraphOptions {
   checkpointer: BaseCheckpointSaver
   planner: Pick<QuizPlanner, 'createRound' | 'materializeRoundPlan'>
+  /** 本地题库等 question_signal 的默认检索入口。 */
   knowledgeRetriever: Pick<KnowledgeRetriever, 'search'>
+  /**
+   * 可选的远程答案证据入口。未提供时仍复用 knowledgeRetriever，
+   * 因此现有 Fake/InMemory 测试和离线模式不需要两套依赖。
+   */
+  answerEvidenceRetriever?: Pick<KnowledgeRetriever, 'search'>
 }
 
 function raiseDifficulty(difficulty: QuizDifficulty) {
@@ -135,7 +141,7 @@ export function createInterviewQuizGraph(
             },
             signal,
           }),
-          options.knowledgeRetriever.search({
+          (options.answerEvidenceRetriever ?? options.knowledgeRetriever).search({
             query,
             limit: 8,
             filter: {
@@ -144,9 +150,6 @@ export function createInterviewQuizGraph(
             signal,
           }),
         ])
-        console.log('[retrieve_knowledge] state', state)
-        console.log('[retrieve_knowledge] questionSignals', questionSignals)
-        console.log('[retrieve_knowledge] answerEvidence', answerEvidence)
 
         if (answerEvidence.length === 0) {
           return {

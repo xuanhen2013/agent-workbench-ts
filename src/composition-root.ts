@@ -7,10 +7,10 @@ import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
 import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
 import { createOpenAIModelClient } from '@/clients/openai'
+import { createCloudflareAiSearchRetrieverFromEnv } from '@/knowledge/cloudflare-ai-search'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
-
 } from '@/knowledge/contracts'
 import {
   chunkDocuments,
@@ -81,6 +81,8 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
     embeddingModel,
     knowledgeStore,
   )
+  const cloudflareAnswerEvidenceRetriever
+    = createCloudflareAiSearchRetrieverFromEnv(process.env)
 
   const { client, model } = createOpenAIModelClient()
   const jokeGraph = createInterruptGraph({
@@ -91,6 +93,9 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
     checkpointer: new MemorySaver(),
     planner: new QuizPlanner(client, model, { skillCatalog }),
     knowledgeRetriever,
+    ...(cloudflareAnswerEvidenceRetriever
+      ? { answerEvidenceRetriever: cloudflareAnswerEvidenceRetriever }
+      : {}),
   })
 
   return { interviewQuizGraph, jokeGraph }
