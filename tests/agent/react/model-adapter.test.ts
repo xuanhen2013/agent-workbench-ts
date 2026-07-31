@@ -5,7 +5,10 @@ import type {
   OpenAIResponseInputItem,
 } from '@/clients/openai'
 import { describe, expect, test, vi } from 'bun:test'
-import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
+import {
+  OpenAIResponsesModel,
+  toModelTurn,
+} from '@/agent/react/model-adapter'
 import { AgentCallError, FailureCode, FailureKind } from '@/runtime'
 
 function response(outputText = 'Model completed the turn'): OpenAIResponse {
@@ -53,6 +56,29 @@ async function advanceRetryDelay(ms: number) {
 }
 
 describe('OpenAIResponsesModel reliability', () => {
+  test('toModelTurn 去除兼容网关附加的 index 后再续传', () => {
+    const turn = toModelTurn({
+      output: [{
+        type: 'function_call',
+        id: 'function-call-id',
+        call_id: 'call-id',
+        name: 'load_skill',
+        arguments: '{}',
+        status: 'completed',
+        index: 0,
+      }],
+      output_text: '',
+    } as unknown as OpenAIResponse)
+
+    expect(turn.functionCalls).toEqual([{
+      callId: 'call-id',
+      name: 'load_skill',
+      arguments: '{}',
+    }])
+    expect(turn.continuationItems).toHaveLength(1)
+    expect(turn.continuationItems[0]).not.toHaveProperty('index')
+  })
+
   test('503 第一次失败、第二次成功时仅重试 SDK create，并保留请求参数', async () => {
     vi.useFakeTimers()
     let createCalls = 0

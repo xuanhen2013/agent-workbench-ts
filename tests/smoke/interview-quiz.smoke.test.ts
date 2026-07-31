@@ -11,6 +11,7 @@ import {
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
 import { createOpenAIModelClient } from '@/clients/openai'
+import { loadSkillCatalog } from '@/skills/skill-loader'
 
 const requiredModelEnvironment = [
   'OPENAI_BASE_URL',
@@ -45,9 +46,12 @@ function findInterrupt<T>(
 test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async () => {
   assertSmokeEnvironment()
   const { client, model } = createOpenAIModelClient(process.env)
+  const skillCatalog = await loadSkillCatalog([
+    new URL('../../skills/question-authoring/', import.meta.url),
+  ])
   const graph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
-    planner: new QuizPlanner(client, model),
+    planner: new QuizPlanner(client, model, { skillCatalog }),
   })
   const threadId = `interview-quiz-smoke-${crypto.randomUUID()}`
   const graphConfig = {
@@ -63,8 +67,19 @@ test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async
     },
   }, graphConfig)
 
+  const firstSnapshot = await graph.getState(graphConfig)
+  const firstError = firstSnapshot.values.error as {
+    code: string
+    message: string
+  } | null
+  if (firstError) {
+    throw new Error(
+      `Interview Quiz planning failed: ${firstError.code} - ${firstError.message}`,
+    )
+  }
+
   const firstQuestions = findInterrupt(
-    await graph.getState(graphConfig),
+    firstSnapshot,
     value => QuizRoundRequestSchema.safeParse(value),
   )
   const submission = {
@@ -106,4 +121,4 @@ test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async
     expect(usage.cachedTokens).toBeGreaterThanOrEqual(0)
     expect(usage.cacheWriteTokens).toBeGreaterThanOrEqual(0)
   }
-})
+}, 180_000)

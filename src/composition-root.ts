@@ -5,9 +5,13 @@ import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
 import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
 import { createOpenAIModelClient } from '@/clients/openai'
+import { loadSkillCatalog } from '@/skills/skill-loader'
 
 /** 正式进程只创建一次 Graph 和 MemorySaver，所有 Joke Route 共享同一状态仓库。 */
-export function createDefaultAppDeps(): AppDeps {
+export async function createDefaultAppDeps(): Promise<AppDeps> {
+  const skillCatalog = await loadSkillCatalog([
+    new URL('../skills/question-authoring/', import.meta.url),
+  ])
   const { client, model } = createOpenAIModelClient()
   const jokeGraph = createInterruptGraph({
     checkpointer: new MemorySaver(),
@@ -15,7 +19,7 @@ export function createDefaultAppDeps(): AppDeps {
   })
   const interviewQuizGraph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
-    planner: new QuizPlanner(client, model),
+    planner: new QuizPlanner(client, model, { skillCatalog }),
   })
 
   return { interviewQuizGraph, jokeGraph }

@@ -3,7 +3,10 @@ import type { OpenAIResponse, OpenAIResponseFunctionTool, OpenAIResponseInputIte
 import {
   toResponseInputItems,
 } from 'openai/lib/responses/ResponseInputItems'
-import { OpenAIResponsesExecutor } from '@/clients/openai'
+import {
+  OpenAIResponsesExecutor,
+  removeKnownGatewayMetadata,
+} from '@/clients/openai'
 
 export interface ModelTurn {
   continuationItems: OpenAIResponseInputItem[]
@@ -39,7 +42,9 @@ export function toModelTurn(
   >,
 ): ModelTurn {
   // 为什么要做这一步
-  const continuationItems = toResponseInputItems(response.output)
+  const continuationItems = removeKnownGatewayMetadata(
+    toResponseInputItems(response.output),
+  )
 
   const functionCalls = response.output.flatMap((item) => {
     if (item.type !== 'function_call') {

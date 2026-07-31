@@ -101,7 +101,7 @@ export class FakeQuizPlanner extends QuizPlanner {
   readonly calls: QuizPlannerInput[] = []
 
   constructor() {
-    super({} as OpenAI, 'fake-model')
+    super({} as OpenAI, 'fake-model', { skillCatalog: [] })
   }
 
   override async createRound(

@@ -3,6 +3,8 @@ import type {
   QuizPlannerInput,
   QuizPlanResult,
 } from '@/agent/interview-quiz/planning'
+import type { OpenAIResponse } from '@/clients/openai'
+import type { SkillCatalogEntry } from '@/skills/contracts'
 import { describe, expect, test } from 'bun:test'
 import {
   QuizDifficulty,
@@ -11,22 +13,137 @@ import {
 import {
   AGENT_QUIZ_INSTRUCTIONS,
   AGENT_QUIZ_PROMPT_CACHE_KEY,
+  MAX_SKILL_TOOL_ROUNDS,
   QuizPlanner,
+  QuizSkillErrorCode,
 } from '@/agent/interview-quiz/planning'
+import { SkillName } from '@/skills/contracts'
+import { SkillToolName } from '@/tools/skill'
 import { createQuizDraft } from '../../helpers/quiz'
 
-function fakeClient(
+const skillCatalog: readonly SkillCatalogEntry[] = [{
+  name: SkillName.QuestionAuthoring,
+  description: 'Test question authoring instructions.',
+  root: new URL(
+    '../../skills/fixtures/question-authoring/',
+    import.meta.url,
+  ),
+}]
+
+function usage(inputTokens: number, cachedTokens = 0) {
+  return {
+    input_tokens: inputTokens,
+    input_tokens_details: {
+      cached_tokens: cachedTokens,
+      cache_write_tokens: 0,
+    },
+  }
+}
+
+function functionCallResponse(
+  calls: Array<{
+    callId: string
+    name: string
+    arguments: Record<string, unknown>
+  }>,
+  inputTokens = 100,
+): OpenAIResponse {
+  return {
+    output: calls.map((call, index) => ({
+      type: 'function_call',
+      id: `function-call-${index}`,
+      call_id: call.callId,
+      name: call.name,
+      arguments: JSON.stringify(call.arguments),
+      status: 'completed',
+    })),
+    output_text: '',
+    usage: usage(inputTokens),
+  } as unknown as OpenAIResponse
+}
+
+function finalResponse(
   outputText: string,
+  inputTokens = 300,
+  cachedTokens = 200,
+): OpenAIResponse {
+  return {
+    output: [{
+      type: 'message',
+      id: 'final-message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{
+        type: 'output_text',
+        text: outputText,
+        annotations: [],
+      }],
+    }],
+    output_text: outputText,
+    usage: usage(inputTokens, cachedTokens),
+  } as unknown as OpenAIResponse
+}
+
+function loadSkillResponse() {
+  return functionCallResponse([{
+    callId: 'load-skill-call',
+    name: SkillToolName.LoadSkill,
+    arguments: { skillName: SkillName.QuestionAuthoring },
+  }])
+}
+
+function readResourcesResponse() {
+  return functionCallResponse([
+    {
+      callId: 'single-choice-call',
+      name: SkillToolName.ReadSkillResource,
+      arguments: {
+        skillName: SkillName.QuestionAuthoring,
+        resourcePath: 'references/single-choice.md',
+      },
+    },
+    {
+      callId: 'multiple-choice-call',
+      name: SkillToolName.ReadSkillResource,
+      arguments: {
+        skillName: SkillName.QuestionAuthoring,
+        resourcePath: 'references/multiple-choice.md',
+      },
+    },
+    {
+      callId: 'advancement-call',
+      name: SkillToolName.ReadSkillResource,
+      arguments: {
+        skillName: SkillName.QuestionAuthoring,
+        resourcePath: 'references/advancement.md',
+      },
+    },
+  ], 200)
+}
+
+function skillTrace(outputText: string): OpenAIResponse[] {
+  return [
+    loadSkillResponse(),
+    readResourcesResponse(),
+    finalResponse(outputText),
+  ]
+}
+
+function fakeClient(
+  responses: readonly OpenAIResponse[],
   capture?: (params: Record<string, unknown>) => void,
 ): OpenAI {
+  let index = 0
+
   return {
     responses: {
       create: async (params: Record<string, unknown>) => {
         capture?.(params)
-        return {
-          output: [],
-          output_text: outputText,
-        }
+        const response = responses[index]
+        index += 1
+        if (!response)
+          throw new Error('Fake Responses sequence exhausted.')
+        return structuredClone(response)
       },
     },
   } as unknown as OpenAI
@@ -45,8 +162,12 @@ function validPlannerInput(): QuizPlannerInput {
   }
 }
 
+function createPlanner(responses: readonly OpenAIResponse[]) {
+  return new QuizPlanner(fakeClient(responses), 'fake-model', { skillCatalog })
+}
+
 async function createRound(outputText: string): Promise<QuizPlanResult> {
-  return await new QuizPlanner(fakeClient(outputText), 'fake-model')
+  return await createPlanner(skillTrace(outputText))
     .createRound(validPlannerInput(), {
       signal: new AbortController().signal,
     })
@@ -61,7 +182,7 @@ function expectPlannerError(result: QuizPlanResult, code: string) {
 }
 
 describe('QuizPlanner', () => {
-  test('合法五题会保留私有正确答案与解析', async () => {
+  test('完整 Skill Trace 后生成合法五题并只保留最终 continuation', async () => {
     const draft = createQuizDraft(2)
     const result = await createRound(JSON.stringify(draft))
 
@@ -74,28 +195,122 @@ describe('QuizPlanner', () => {
       correctOptionIds: ['A'],
       explanation: expect.any(String),
     })
+    expect(result.continuationItems).toHaveLength(1)
+    expect(result.continuationItems[0]).toMatchObject({
+      type: 'message',
+      id: 'final-message',
+    })
+    expect(JSON.stringify(result.continuationItems)).not.toContain('load-skill-call')
+    expect(result.usage).toEqual({
+      inputTokens: 600,
+      cachedTokens: 200,
+      cacheWriteTokens: 0,
+    })
   })
 
-  test('请求使用固定 instructions、稳定 cache key 和调用方 history', async () => {
-    let request: Record<string, unknown> | undefined
+  test('三轮请求复用 toModelTurn continuation，并保持 metadata 前缀与稳定 cache key', async () => {
+    const requests: Array<Record<string, unknown>> = []
     const draft = createQuizDraft(2)
     const input = validPlannerInput()
     const planner = new QuizPlanner(
-      fakeClient(JSON.stringify(draft), params => request = params),
+      fakeClient(skillTrace(JSON.stringify(draft)), params => requests.push(params)),
       'fake-model',
+      { skillCatalog },
     )
 
     await planner.createRound(input, {
       signal: new AbortController().signal,
     })
 
-    expect(request).toMatchObject({
+    expect(requests).toHaveLength(3)
+    expect(requests[0]).toMatchObject({
       instructions: AGENT_QUIZ_INSTRUCTIONS,
-      input: input.history,
       prompt_cache_key: AGENT_QUIZ_PROMPT_CACHE_KEY,
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
       store: false,
     })
+    expect(AGENT_QUIZ_PROMPT_CACHE_KEY).toBe('agent-interview-quiz:v2')
     expect(AGENT_QUIZ_PROMPT_CACHE_KEY).not.toContain('thread')
+
+    const firstInput = requests[0]!.input as Array<Record<string, unknown>>
+    expect(firstInput).toHaveLength(2)
+    expect(firstInput[0]).toMatchObject({
+      role: 'user',
+      content: expect.stringContaining('<available_skills>'),
+    })
+    expect(String(firstInput[0]!.content)).not.toContain('# Test Question Authoring')
+    expect(firstInput[1]).toEqual(
+      input.history[0] as unknown as Record<string, unknown>,
+    )
+
+    const secondInput = requests[1]!.input as Array<Record<string, unknown>>
+    expect(secondInput.filter(item => item.type === 'function_call')).toHaveLength(1)
+    expect(secondInput.filter(item => item.type === 'function_call_output')).toHaveLength(1)
+    expect(JSON.stringify(secondInput)).toContain('# Test Question Authoring')
+
+    const thirdInput = requests[2]!.input as Array<Record<string, unknown>>
+    expect(thirdInput.filter(item => item.type === 'function_call')).toHaveLength(4)
+    expect(thirdInput.filter(item => item.type === 'function_call_output')).toHaveLength(4)
+    expect(JSON.stringify(thirdInput)).toContain('Exactly one option')
+    expect(JSON.stringify(thirdInput)).toContain('At least two options')
+  })
+
+  test('未加载必需 Skill 就直接输出时失败', async () => {
+    const result = await createPlanner([
+      finalResponse(JSON.stringify(createQuizDraft(2))),
+    ]).createRound(validPlannerInput(), {
+      signal: new AbortController().signal,
+    })
+
+    expectPlannerError(result, QuizSkillErrorCode.RequiredSkillMissing)
+  })
+
+  test('Skill Tool 失败时返回统一错误且不披露 Loader 细节', async () => {
+    const result = await createPlanner([
+      loadSkillResponse(),
+      functionCallResponse([{
+        callId: 'escaped-resource-call',
+        name: SkillToolName.ReadSkillResource,
+        arguments: {
+          skillName: SkillName.QuestionAuthoring,
+          resourcePath: '../secret.md',
+        },
+      }]),
+    ]).createRound(validPlannerInput(), {
+      signal: new AbortController().signal,
+    })
+
+    expectPlannerError(result, QuizSkillErrorCode.ToolFailed)
+    if (!result.ok)
+      expect(result.error.message).toBe('Skill Tool 执行失败。')
+  })
+
+  test('超过 Skill Tool 轮次预算时停止', async () => {
+    const repeatedCalls = Array.from(
+      { length: MAX_SKILL_TOOL_ROUNDS + 1 },
+      () => loadSkillResponse(),
+    )
+    const result = await createPlanner(repeatedCalls)
+      .createRound(validPlannerInput(), {
+        signal: new AbortController().signal,
+      })
+
+    expectPlannerError(result, QuizSkillErrorCode.RoundLimit)
+  })
+
+  test('加载 Skill 后没有最终文本时返回 final output missing', async () => {
+    const result = await createPlanner([
+      loadSkillResponse(),
+      {
+        output: [],
+        output_text: '',
+      } as unknown as OpenAIResponse,
+    ]).createRound(validPlannerInput(), {
+      signal: new AbortController().signal,
+    })
+
+    expectPlannerError(result, QuizSkillErrorCode.FinalOutputMissing)
   })
 
   test('模型返回非法 JSON 时返回 planner_json_invalid', async () => {
@@ -142,7 +357,7 @@ describe('QuizPlanner', () => {
   })
 
   test('历史题干重复返回 repeated_question_stem', () => {
-    const planner = new QuizPlanner(fakeClient('unused'), 'fake-model')
+    const planner = createPlanner([])
     const draft = createQuizDraft(2)
     const result = planner._validateQuizRoundDraft(draft, {
       ...validPlannerInput(),
@@ -155,7 +370,7 @@ describe('QuizPlanner', () => {
   })
 
   test('materialize 使用 threadId 与 round 生成确定且唯一的 ID', () => {
-    const planner = new QuizPlanner(fakeClient('unused'), 'fake-model')
+    const planner = createPlanner([])
     const input = {
       threadId: 'thread-123',
       plannerInput: validPlannerInput(),
