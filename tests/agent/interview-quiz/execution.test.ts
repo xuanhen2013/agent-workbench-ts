@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { QuizDifficulty } from '@/agent/interview-quiz/contracts'
+import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import {
   gradeQuizRound,
   projectPublicRoundResult,
@@ -35,9 +36,9 @@ describe('Interview Quiz execution', () => {
     const duplicateResult = validateSubmission(duplicate, plan)
 
     expect(mismatchResult.isErr() && mismatchResult.error.code)
-      .toBe('review_id_mismatch')
+      .toBe(InterviewQuizErrorCode.ReviewIdMismatch)
     expect(duplicateResult.isErr() && duplicateResult.error.code)
-      .toBe('duplicate_question_answer')
+      .toBe(InterviewQuizErrorCode.DuplicateQuestionAnswer)
   })
 
   test('多选顺序不同仍然判对', () => {

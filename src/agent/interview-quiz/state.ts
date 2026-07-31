@@ -16,6 +16,7 @@ import {
   QuizConfigSchema,
   QuizRoundSubmissionSchema,
 } from './contracts'
+import { InterviewQuizErrorCode } from './errors'
 
 /** initialize 或 replan 已经确定好的当前轮规划参数。 */
 export interface QuizRoundContext {
@@ -79,7 +80,7 @@ export const InterviewQuizStateSchema = new StateSchema({
 
   /** 只保存可公开稳定错误，不保存 SDK 原始异常和 stack。 */
   error: z.object({
-    code: z.string(),
+    code: z.enum(InterviewQuizErrorCode),
     message: z.string(),
   }).optional(),
 })

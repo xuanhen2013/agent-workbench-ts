@@ -1,37 +1,22 @@
+import type { ToolExecutionResult } from './errors'
 import type { ToolRegistry } from './registry'
 import { z } from 'zod/v4'
+import {
+  ToolExecutionErrorMessages,
+  ToolExecutionErrorType,
+} from './errors'
+
+export {
+  ToolExecutionErrorMessages,
+  ToolExecutionErrorType,
+} from './errors'
+export type { ToolExecutionError, ToolExecutionResult } from './errors'
 
 export interface RequestedToolCall {
   callId: string
   name: string
   arguments: string
 }
-
-export enum ToolExecutionErrorType {
-  UNKNOWN_TOOL = 'unknown_tool',
-  INVALID_JSON = 'invalid_json',
-  INVALID_ARGUMENTS = 'invalid_arguments',
-  ABORTED = 'aborted',
-  EXECUTION_FAILED = 'execution_failed',
-}
-
-export type ToolExecutionResult
-  = | {
-    ok: true
-    callId: string
-    name: string
-    output: unknown
-  }
-  | {
-    ok: false
-    callId: string
-    name: string
-    error: {
-      code: ToolExecutionErrorType
-      message: string
-      runId: string
-    }
-  }
 
 export interface ExecuteToolOptions {
   runId: string
@@ -81,11 +66,17 @@ export class ToolExecutor {
     const tool = this.registry.get(call.name)
 
     if (!tool) {
-      return failure(ToolExecutionErrorType.UNKNOWN_TOOL, `Tool "${call.name}" is not registered`)
+      return failure(
+        ToolExecutionErrorType.UNKNOWN_TOOL,
+        `Tool "${call.name}" is not registered`,
+      )
     }
 
     if (options.signal.aborted) {
-      return failure(ToolExecutionErrorType.ABORTED, 'Execution aborted')
+      return failure(
+        ToolExecutionErrorType.ABORTED,
+        ToolExecutionErrorMessages[ToolExecutionErrorType.ABORTED],
+      )
     }
 
     let signalAbortFn: () => void
@@ -102,7 +93,10 @@ export class ToolExecutor {
       Promise.resolve()
         .then(() => JSON.parse(call.arguments))
         .catch(() => {
-          throw new ClassifiedToolError(ToolExecutionErrorType.INVALID_JSON, 'Invalid arguments')
+          throw new ClassifiedToolError(
+            ToolExecutionErrorType.INVALID_JSON,
+            ToolExecutionErrorMessages[ToolExecutionErrorType.INVALID_JSON],
+          )
         })
         .then(arguments_ => tool.invoke(
           arguments_,
@@ -120,7 +114,10 @@ export class ToolExecutor {
         return failure(error.code, error.message)
       }
       if (options.signal.aborted) {
-        return failure(ToolExecutionErrorType.ABORTED, 'Execution aborted')
+        return failure(
+          ToolExecutionErrorType.ABORTED,
+          ToolExecutionErrorMessages[ToolExecutionErrorType.ABORTED],
+        )
       }
 
       if (error instanceof z.ZodError) {
@@ -129,7 +126,9 @@ export class ToolExecutor {
 
       return failure(
         ToolExecutionErrorType.EXECUTION_FAILED,
-        error instanceof Error ? error.message : String(error),
+        error instanceof Error
+          ? error.message
+          : ToolExecutionErrorMessages[ToolExecutionErrorType.EXECUTION_FAILED],
       )
     }).finally(() => {
       if (signalAbortFn) {

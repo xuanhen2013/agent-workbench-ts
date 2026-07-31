@@ -6,6 +6,7 @@ import type {
 import type { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import type { InterviewQuizState } from '@/agent/interview-quiz/state'
 import type { AppEnv } from '@/http'
+import type { HttpStatusCode } from '@/http/errors'
 import { Command } from '@langchain/langgraph'
 import {
   InterviewQuizStatus,
@@ -20,6 +21,11 @@ import {
   QuizRoundRequestSchema,
   QuizRoundResultRequestSchema,
 } from '@/agent/interview-quiz/execution'
+import {
+  createHttpError,
+  HttpErrorCode,
+  HttpStatus,
+} from '@/http/errors'
 
 export type InterviewQuizGraph = ReturnType<typeof createInterviewQuizGraph>
 
@@ -37,7 +43,7 @@ type Projection
   = | { ok: true, view: InterviewQuizView }
     | {
       ok: false
-      status: 404 | 409 | 500
+      status: HttpStatusCode
       error: { code: string, message: string }
     }
 
@@ -51,7 +57,7 @@ function graphConfig(threadId: string, signal?: AbortSignal) {
 
 function errorResponse(
   c: Context<AppEnv>,
-  status: 400 | 404 | 409 | 500,
+  status: HttpStatusCode,
   error: { code: string, message: string },
 ) {
   return c.json({
@@ -68,10 +74,7 @@ async function readJson(c: Context<AppEnv>) {
   catch {
     return {
       ok: false as const,
-      error: {
-        code: 'invalid_json',
-        message: 'The request body must be valid JSON.',
-      },
+      error: createHttpError(HttpErrorCode.InvalidJson),
     }
   }
 }
@@ -103,11 +106,8 @@ async function projectInterviewQuiz(
   if (state.threadId !== threadId || !state.config) {
     return {
       ok: false,
-      status: 404,
-      error: {
-        code: 'thread_not_found',
-        message: 'The interview quiz thread was not found.',
-      },
+      status: HttpStatus.NotFound,
+      error: createHttpError(HttpErrorCode.ThreadNotFound),
     }
   }
 
@@ -160,21 +160,16 @@ async function projectInterviewQuiz(
         status: 'failed',
         config: state.config,
         results,
-        error: state.error ?? {
-          code: 'interview_quiz_failed',
-          message: 'The interview quiz graph failed.',
-        },
+        error: state.error
+          ?? createHttpError(HttpErrorCode.InterviewQuizFailed),
       },
     }
   }
 
   return {
     ok: false,
-    status: 500,
-    error: {
-      code: 'interview_quiz_snapshot_inconsistent',
-      message: 'The graph stopped without an interrupt or terminal state.',
-    },
+    status: HttpStatus.InternalServerError,
+    error: createHttpError(HttpErrorCode.InterviewQuizSnapshotInconsistent),
   }
 }
 
@@ -185,14 +180,15 @@ export function registerInterviewQuizRoutes(
   app.post('/api/interview-quiz', async (c) => {
     const json = await readJson(c)
     if (!json.ok)
-      return errorResponse(c, 400, json.error)
+      return errorResponse(c, HttpStatus.BadRequest, json.error)
 
     const config = QuizConfigSchema.safeParse(json.value)
     if (!config.success) {
-      return errorResponse(c, 400, {
-        code: 'invalid_quiz_config',
-        message: 'initialDifficulty and maxRounds are invalid.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidQuizConfig),
+      )
     }
 
     const threadId = crypto.randomUUID()
@@ -220,14 +216,15 @@ export function registerInterviewQuizRoutes(
   app.post('/api/interview-quiz/:threadId/answers', async (c) => {
     const json = await readJson(c)
     if (!json.ok)
-      return errorResponse(c, 400, json.error)
+      return errorResponse(c, HttpStatus.BadRequest, json.error)
 
     const submission = QuizRoundSubmissionSchema.safeParse(json.value)
     if (!submission.success) {
-      return errorResponse(c, 400, {
-        code: 'invalid_quiz_submission',
-        message: 'The quiz submission is invalid.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidQuizSubmission),
+      )
     }
 
     const threadId = c.req.param('threadId')
@@ -236,17 +233,19 @@ export function registerInterviewQuizRoutes(
       return errorResponse(c, before.status, before.error)
 
     if (!before.view.waitingQuestions) {
-      return errorResponse(c, 409, {
-        code: 'thread_not_waiting_for_answers',
-        message: 'The quiz thread is not waiting for answers.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.Conflict,
+        createHttpError(HttpErrorCode.ThreadNotWaitingForAnswers),
+      )
     }
 
     if (before.view.waitingQuestions.reviewId !== submission.data.reviewId) {
-      return errorResponse(c, 409, {
-        code: 'review_id_mismatch',
-        message: 'The submission does not match the pending quiz round.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.Conflict,
+        createHttpError(HttpErrorCode.ReviewIdMismatch),
+      )
     }
 
     await graph.invoke(
@@ -263,14 +262,15 @@ export function registerInterviewQuizRoutes(
   app.post('/api/interview-quiz/:threadId/next', async (c) => {
     const json = await readJson(c)
     if (!json.ok)
-      return errorResponse(c, 400, json.error)
+      return errorResponse(c, HttpStatus.BadRequest, json.error)
 
     const decision = QuizNextRoundDecisionSchema.safeParse(json.value)
     if (!decision.success) {
-      return errorResponse(c, 400, {
-        code: 'invalid_next_round_decision',
-        message: 'A valid result reviewId is required.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidNextRoundDecision),
+      )
     }
 
     const threadId = c.req.param('threadId')
@@ -279,17 +279,19 @@ export function registerInterviewQuizRoutes(
       return errorResponse(c, before.status, before.error)
 
     if (!before.view.waitingResult) {
-      return errorResponse(c, 409, {
-        code: 'thread_not_waiting_for_next_round',
-        message: 'The quiz thread is not waiting for the next round.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.Conflict,
+        createHttpError(HttpErrorCode.ThreadNotWaitingForNextRound),
+      )
     }
 
     if (before.view.waitingResult.reviewId !== decision.data.reviewId) {
-      return errorResponse(c, 409, {
-        code: 'review_id_mismatch',
-        message: 'The next-round decision does not match the current result.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.Conflict,
+        createHttpError(HttpErrorCode.ReviewIdMismatch),
+      )
     }
 
     await graph.invoke(

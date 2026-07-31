@@ -10,36 +10,25 @@ import { basename, isAbsolute, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { SkillFrontmatterSchema } from './contracts'
+import {
+  raiseSkillLoaderError,
+  SkillLoaderErrorCode,
+} from './errors'
 
-export enum SkillLoaderErrorCode {
-  InvalidRoot = 'skill_invalid_root',
-  ManifestReadFailed = 'skill_manifest_read_failed',
-  InvalidDocument = 'skill_invalid_document',
-  NameMismatch = 'skill_name_mismatch',
-  DuplicateName = 'skill_duplicate_name',
-  InvalidResourcePath = 'skill_invalid_resource_path',
-  ResourceReadFailed = 'skill_resource_read_failed',
-}
+export {
+  createSkillLoaderError,
+  SkillLoaderError,
+  SkillLoaderErrorCode,
+} from './errors'
 
-export class SkillLoaderError extends Error {
-  constructor(
-    readonly code: SkillLoaderErrorCode,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'SkillLoaderError'
-  }
-}
-
-function loaderError(code: SkillLoaderErrorCode, message: string): never {
-  throw new SkillLoaderError(code, message)
+function loaderError(code: SkillLoaderErrorCode): never {
+  return raiseSkillLoaderError(code)
 }
 
 function normalizeRoot(root: URL): URL {
   if (root.protocol !== 'file:') {
     return loaderError(
       SkillLoaderErrorCode.InvalidRoot,
-      'Skill root must be a local file URL.',
     )
   }
 
@@ -53,7 +42,6 @@ async function readManifest(root: URL): Promise<string> {
   catch {
     return loaderError(
       SkillLoaderErrorCode.ManifestReadFailed,
-      'Skill manifest could not be read.',
     )
   }
 }
@@ -72,7 +60,6 @@ export function parseSkillDocument(
   if (!match) {
     return loaderError(
       SkillLoaderErrorCode.InvalidDocument,
-      'SKILL.md must start with valid YAML frontmatter.',
     )
   }
 
@@ -83,7 +70,6 @@ export function parseSkillDocument(
   catch {
     return loaderError(
       SkillLoaderErrorCode.InvalidDocument,
-      'SKILL.md frontmatter is invalid.',
     )
   }
 
@@ -91,14 +77,12 @@ export function parseSkillDocument(
   if (!parsed.success) {
     return loaderError(
       SkillLoaderErrorCode.InvalidDocument,
-      'SKILL.md frontmatter is invalid.',
     )
   }
 
   if (parsed.data.name !== expectedDirectoryName) {
     return loaderError(
       SkillLoaderErrorCode.NameMismatch,
-      'Skill name must match its directory name.',
     )
   }
 
@@ -106,7 +90,6 @@ export function parseSkillDocument(
   if (!instructions) {
     return loaderError(
       SkillLoaderErrorCode.InvalidDocument,
-      'SKILL.md instructions must not be empty.',
     )
   }
 
@@ -141,7 +124,6 @@ export async function loadSkillCatalog(
     if (names.has(entry.name)) {
       return loaderError(
         SkillLoaderErrorCode.DuplicateName,
-        'Skill catalog contains a duplicate name.',
       )
     }
     names.add(entry.name)
@@ -162,7 +144,6 @@ export async function loadSkill(
   if (document.metadata.name !== entry.name) {
     return loaderError(
       SkillLoaderErrorCode.NameMismatch,
-      'Loaded Skill no longer matches its catalog entry.',
     )
   }
 
@@ -184,7 +165,6 @@ function validateResourcePath(resourcePath: string): string {
   ) {
     return loaderError(
       SkillLoaderErrorCode.InvalidResourcePath,
-      'Skill resource path must be a Markdown file under references/.',
     )
   }
 
@@ -203,7 +183,6 @@ export async function readSkillResource(
   if (!targetUrl.href.startsWith(referencesRootUrl.href)) {
     return loaderError(
       SkillLoaderErrorCode.InvalidResourcePath,
-      'Skill resource path escapes the references directory.',
     )
   }
 
@@ -218,7 +197,6 @@ export async function readSkillResource(
   catch {
     return loaderError(
       SkillLoaderErrorCode.ResourceReadFailed,
-      'Skill resource could not be read.',
     )
   }
 
@@ -231,7 +209,6 @@ export async function readSkillResource(
   ) {
     return loaderError(
       SkillLoaderErrorCode.InvalidResourcePath,
-      'Skill resource path escapes the references directory.',
     )
   }
 
@@ -242,14 +219,12 @@ export async function readSkillResource(
   catch {
     return loaderError(
       SkillLoaderErrorCode.ResourceReadFailed,
-      'Skill resource could not be read.',
     )
   }
 
   if (!content) {
     return loaderError(
       SkillLoaderErrorCode.ResourceReadFailed,
-      'Skill resource must not be empty.',
     )
   }
 

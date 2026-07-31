@@ -11,12 +11,12 @@ import {
   QuizDifficulty,
   QuizStrategy,
 } from '@/agent/interview-quiz/contracts'
+import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import {
   AGENT_QUIZ_INSTRUCTIONS,
   AGENT_QUIZ_PROMPT_CACHE_KEY,
   MAX_SKILL_TOOL_ROUNDS,
   QuizPlanner,
-  QuizSkillErrorCode,
 } from '@/agent/interview-quiz/planning'
 import {
   KnowledgeEvidenceRole,
@@ -228,7 +228,10 @@ async function createRound(outputText: string): Promise<QuizPlanResult> {
     })
 }
 
-function expectPlannerError(result: QuizPlanResult, code: string) {
+function expectPlannerError(
+  result: QuizPlanResult,
+  code: InterviewQuizErrorCode,
+) {
   expect(result.ok).toBe(false)
   if (result.ok)
     throw new Error('Expected QuizPlanner to return a validation error.')
@@ -355,7 +358,7 @@ describe('QuizPlanner', () => {
       signal: new AbortController().signal,
     })
 
-    expectPlannerError(result, QuizSkillErrorCode.RequiredSkillMissing)
+    expectPlannerError(result, InterviewQuizErrorCode.RequiredSkillMissing)
   })
 
   test('Skill Tool 失败时返回统一错误且不披露 Loader 细节', async () => {
@@ -373,7 +376,7 @@ describe('QuizPlanner', () => {
       signal: new AbortController().signal,
     })
 
-    expectPlannerError(result, QuizSkillErrorCode.ToolFailed)
+    expectPlannerError(result, InterviewQuizErrorCode.SkillToolFailed)
     if (!result.ok)
       expect(result.error.message).toBe('Skill Tool 执行失败。')
   })
@@ -388,7 +391,7 @@ describe('QuizPlanner', () => {
         signal: new AbortController().signal,
       })
 
-    expectPlannerError(result, QuizSkillErrorCode.RoundLimit)
+    expectPlannerError(result, InterviewQuizErrorCode.SkillRoundLimit)
   })
 
   test('加载 Skill 后没有最终文本时返回 final output missing', async () => {
@@ -402,11 +405,14 @@ describe('QuizPlanner', () => {
       signal: new AbortController().signal,
     })
 
-    expectPlannerError(result, QuizSkillErrorCode.FinalOutputMissing)
+    expectPlannerError(result, InterviewQuizErrorCode.SkillFinalOutputMissing)
   })
 
   test('模型返回非法 JSON 时返回 planner_json_invalid', async () => {
-    expectPlannerError(await createRound('{not-json'), 'planner_json_invalid')
+    expectPlannerError(
+      await createRound('{not-json'),
+      InterviewQuizErrorCode.PlannerJsonInvalid,
+    )
   })
 
   test('单选题有两个正确答案时返回 invalid_single_answer_count', async () => {
@@ -418,7 +424,7 @@ describe('QuizPlanner', () => {
 
     expectPlannerError(
       await createRound(JSON.stringify(draft)),
-      'invalid_single_answer_count',
+      InterviewQuizErrorCode.InvalidSingleAnswerCount,
     )
   })
 
@@ -431,7 +437,7 @@ describe('QuizPlanner', () => {
 
     expectPlannerError(
       await createRound(JSON.stringify(draft)),
-      'invalid_multiple_all_options_correct',
+      InterviewQuizErrorCode.InvalidMultipleAllOptionsCorrect,
     )
   })
 
@@ -444,7 +450,7 @@ describe('QuizPlanner', () => {
 
     expectPlannerError(
       await createRound(JSON.stringify(draft)),
-      'duplicate_question_stem',
+      InterviewQuizErrorCode.DuplicateQuestionStem,
     )
   })
 
@@ -458,7 +464,7 @@ describe('QuizPlanner', () => {
 
     expect(result.isErr()).toBe(true)
     if (result.isErr())
-      expect(result.error.code).toBe('repeated_question_stem')
+      expect(result.error.code).toBe(InterviewQuizErrorCode.RepeatedQuestionStem)
   })
 
   test('RAG 引用只接受本轮 answer_evidence Chunk', () => {
@@ -486,7 +492,7 @@ describe('QuizPlanner', () => {
     })
     expect(invalid.isErr()).toBe(true)
     if (invalid.isErr())
-      expect(invalid.error.code).toBe('unknown_source_chunk_id')
+      expect(invalid.error.code).toBe(InterviewQuizErrorCode.UnknownSourceChunkId)
   })
 
   test('materialize 使用 threadId 与 round 生成确定且唯一的 ID', () => {

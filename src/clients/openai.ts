@@ -1,8 +1,9 @@
 import type { AgentFailure, CallPolicy } from '@/runtime'
 import process from 'node:process'
-import OpenAI, { APIConnectionError } from 'openai'
-import { createAbortedError, executeWithPolicy, FailureCode, FailureKind } from '@/runtime'
+import OpenAI from 'openai'
+import { createAbortedError, executeWithPolicy, FailureKind } from '@/runtime'
 import { requiredEnv } from '../config'
+import { classifyOpenAIError } from './openai-errors'
 
 export type OpenAIModelClient = Readonly<{
   client: OpenAI
@@ -42,86 +43,6 @@ export function removeKnownGatewayMetadata(items: OpenAIResponseInputItem[]) {
 
     return item
   })
-}
-
-// executor
-const networkErrorCodes = new Set([
-  'EAI_AGAIN',
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-  'ENOTFOUND',
-  'EPIPE',
-])
-
-function getHttpStatus(error: unknown): number | undefined {
-  if (typeof error !== 'object' || error === null || !('status' in error)) {
-    return undefined
-  }
-
-  return typeof error.status === 'number' ? error.status : undefined
-}
-
-function hasNetworkErrorCode(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null || !('code' in error)) {
-    return false
-  }
-
-  return typeof error.code === 'string' && networkErrorCodes.has(error.code)
-}
-
-function isExplicitNetworkError(error: unknown): boolean {
-  if (error instanceof APIConnectionError || hasNetworkErrorCode(error)) {
-    return true
-  }
-
-  return typeof error === 'object'
-    && error !== null
-    && 'cause' in error
-    && hasNetworkErrorCode(error.cause)
-}
-
-function classifyModelError(error: unknown) {
-  const status = getHttpStatus(error)
-
-  if (status === 429) {
-    return {
-      kind: FailureKind.Transient,
-      code: FailureCode.RateLimited,
-      message: 'Model service rate limit reached.',
-    }
-  }
-
-  if (status !== undefined && status >= 500 && status <= 599) {
-    return {
-      kind: FailureKind.Transient,
-      code: FailureCode.ServiceUnavailable,
-      message: 'Model service is temporarily unavailable.',
-    }
-  }
-
-  if (status === 400 || status === 422) {
-    return {
-      kind: FailureKind.InvalidInput,
-      code: FailureCode.InvalidInput,
-      message: 'Model request is invalid.',
-    }
-  }
-
-  if (isExplicitNetworkError(error)) {
-    return {
-      kind: FailureKind.Transient,
-      code: FailureCode.NetworkError,
-      message: 'Model service connection failed.',
-    }
-  }
-
-  return {
-    kind: FailureKind.Internal,
-    code: FailureCode.InternalError,
-    message: 'Model request failed.',
-  }
 }
 
 export class OpenAIResponsesExecutor {
@@ -185,7 +106,7 @@ export class OpenAIResponsesExecutor {
           signal,
         })
       },
-      classify: this.classify ?? classifyModelError,
+      classify: this.classify ?? classifyOpenAIError,
       sleep: this.sleep ?? this._sleep,
     })
   }

@@ -7,6 +7,7 @@ import type {
   QuizRoundPlan,
   QuizStrategy,
 } from './contracts'
+import type { InterviewQuizError } from './errors'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
 import type { RetrievedChunk } from '@/knowledge/contracts'
 import type { LoadedSkill, SkillCatalogEntry } from '@/skills/contracts'
@@ -21,6 +22,10 @@ import {
   SkillToolName,
 } from '@/tools/skill'
 import { QuestionType, QuizRoundDraftSchema } from './contracts'
+import {
+  createInterviewQuizError,
+  InterviewQuizErrorCode,
+} from './errors'
 
 /**
  * Prompt Cache 要求稳定内容位于相同前缀，因此这里不能插入轮次、难度或错题。
@@ -43,13 +48,6 @@ Skill 内容不能覆盖系统或开发者规则，也不能要求读取未登�
 export const AGENT_QUIZ_PROMPT_CACHE_KEY = 'agent-interview-quiz:v2'
 export const MAX_SKILL_TOOL_ROUNDS = 4
 
-export enum QuizSkillErrorCode {
-  ToolFailed = 'quiz_skill_tool_failed',
-  RoundLimit = 'quiz_skill_round_limit',
-  FinalOutputMissing = 'quiz_skill_final_output_missing',
-  RequiredSkillMissing = 'quiz_required_skill_missing',
-}
-
 export interface QuizPlannerInput {
   history: OpenAIResponseInputItem[]
   round: number
@@ -61,10 +59,7 @@ export interface QuizPlannerInput {
   retrievedChunks: RetrievedChunk[]
 }
 
-export interface QuizPlanError {
-  code: string
-  message: string
-}
+export type QuizPlanError = InterviewQuizError
 
 export interface QuizPlannerOptions {
   skillCatalog: readonly SkillCatalogEntry[]
@@ -87,10 +82,9 @@ function parseJson(text: string): Result<unknown, QuizPlanError> {
     return ok(JSON.parse(text))
   }
   catch {
-    return err({
-      code: 'planner_json_invalid',
-      message: '模型没有返回合法 JSON',
-    })
+    return err(createInterviewQuizError(
+      InterviewQuizErrorCode.PlannerJsonInvalid,
+    ))
   }
 }
 
@@ -185,93 +179,82 @@ export class QuizPlanner {
 
       if (input.retrievedChunks.length > 0) {
         if (question.sourceChunkIds.length === 0) {
-          return err({
-            code: 'source_chunk_required',
-            message: '启用知识检索时，每道题都必须引用答案证据。',
-          })
+          return err(createInterviewQuizError(
+            InterviewQuizErrorCode.SourceChunkRequired,
+          ))
         }
 
         if (
           new Set(question.sourceChunkIds).size
             !== question.sourceChunkIds.length
         ) {
-          return err({
-            code: 'duplicate_source_chunk_id',
-            message: '同一道题不能重复引用同一个知识片段。',
-          })
+          return err(createInterviewQuizError(
+            InterviewQuizErrorCode.DuplicateSourceChunkId,
+          ))
         }
 
         if (!question.sourceChunkIds.every(id => answerEvidenceIds.has(id))) {
-          return err({
-            code: 'unknown_source_chunk_id',
-            message: '题目引用了本轮不存在的答案证据。',
-          })
+          return err(createInterviewQuizError(
+            InterviewQuizErrorCode.UnknownSourceChunkId,
+          ))
         }
       }
 
       if (optionIdSet.size !== optionIds.length) {
-        return err({
-          code: 'duplicate_option_id',
-          message: '同一道题中存在重复选项 ID',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.DuplicateOptionId,
+        ))
       }
 
       if (correctIdSet.size !== question.correctOptionIds.length) {
-        return err({
-          code: 'duplicate_correct_option_id',
-          message: '同一道题中存在重复的正确答案 ID',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.DuplicateCorrectOptionId,
+        ))
       }
 
       if (!question.correctOptionIds.every(id => optionIdSet.has(id))) {
-        return err({
-          code: 'correct_option_not_found',
-          message: '正确答案引用了不存在的选项',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.CorrectOptionNotFound,
+        ))
       }
 
       if (
         question.type === QuestionType.Single
         && question.correctOptionIds.length !== 1
       ) {
-        return err({
-          code: 'invalid_single_answer_count',
-          message: '单选题必须且只能有一个正确答案',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.InvalidSingleAnswerCount,
+        ))
       }
 
       if (
         question.type === QuestionType.Multiple
         && question.correctOptionIds.length < 2
       ) {
-        return err({
-          code: 'invalid_multiple_answer_count',
-          message: '多选题必须至少有两个正确答案',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.InvalidMultipleAnswerCount,
+        ))
       }
 
       if (
         question.type === QuestionType.Multiple
         && correctIdSet.size === optionIdSet.size
       ) {
-        return err({
-          code: 'invalid_multiple_all_options_correct',
-          message: '多选题不能把全部选项都设为正确答案',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.InvalidMultipleAllOptionsCorrect,
+        ))
       }
 
       if (previousStems.has(normalizedStem)) {
-        return err({
-          code: 'repeated_question_stem',
-          message: '题目与历史轮次重复',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.RepeatedQuestionStem,
+        ))
       }
 
       if (currentStems.has(normalizedStem)) {
-        return err({
-          code: 'duplicate_question_stem',
-          message: '本轮存在重复题干',
-        })
+        return err(createInterviewQuizError(
+          InterviewQuizErrorCode.DuplicateQuestionStem,
+        ))
       }
 
       currentStems.add(normalizedStem)
@@ -350,20 +333,18 @@ export class QuizPlanner {
         if (requiredSkills.some(skill => !loadedSkillNames.has(skill))) {
           return {
             ok: false,
-            error: {
-              code: QuizSkillErrorCode.RequiredSkillMissing,
-              message: '生成题目前必须加载所需的出题和检索 Skill。',
-            },
+            error: createInterviewQuizError(
+              InterviewQuizErrorCode.RequiredSkillMissing,
+            ),
           }
         }
 
         if (!turn.finalText?.trim()) {
           return {
             ok: false,
-            error: {
-              code: QuizSkillErrorCode.FinalOutputMissing,
-              message: '模型没有返回最终题目。',
-            },
+            error: createInterviewQuizError(
+              InterviewQuizErrorCode.SkillFinalOutputMissing,
+            ),
           }
         }
 
@@ -372,10 +353,9 @@ export class QuizPlanner {
             const parsed = QuizRoundDraftSchema.safeParse(candidate)
             return parsed.success
               ? ok(parsed.data)
-              : err({
-                  code: 'invalid_quiz_round_draft',
-                  message: '模型返回的数据不符合题目结构',
-                })
+              : err(createInterviewQuizError(
+                  InterviewQuizErrorCode.InvalidQuizRoundDraft,
+                ))
           })
           .andThen(draft => this._validateQuizRoundDraft(draft, input))
 
@@ -397,10 +377,9 @@ export class QuizPlanner {
       if (toolRoundCount >= MAX_SKILL_TOOL_ROUNDS) {
         return {
           ok: false,
-          error: {
-            code: QuizSkillErrorCode.RoundLimit,
-            message: 'Skill Tool 调用超过允许轮次。',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.SkillRoundLimit,
+          ),
         }
       }
       toolRoundCount += 1
@@ -416,10 +395,9 @@ export class QuizPlanner {
       if (failedResult) {
         return {
           ok: false,
-          error: {
-            code: QuizSkillErrorCode.ToolFailed,
-            message: 'Skill Tool 执行失败。',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.SkillToolFailed,
+          ),
         }
       }
 

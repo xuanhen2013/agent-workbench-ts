@@ -5,6 +5,7 @@ import {
   InterviewQuizStatus,
   QuizDifficulty,
 } from '@/agent/interview-quiz/contracts'
+import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import {
   QuizRoundRequestSchema,
 } from '@/agent/interview-quiz/execution'
@@ -106,7 +107,7 @@ describe('Interview Quiz Graph RAG', () => {
     const snapshot = await graph.getState(config(threadId))
     expect(snapshot.values.status).toBe(InterviewQuizStatus.Failed)
     expect(snapshot.values.error).toEqual({
-      code: 'insufficient_knowledge',
+      code: InterviewQuizErrorCode.InsufficientKnowledge,
       message: '当前轮没有可用于证明答案的知识资料',
     })
   })

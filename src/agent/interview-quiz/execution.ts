@@ -7,6 +7,7 @@ import type {
   QuizRoundResult,
   QuizRoundSubmission,
 } from './contracts'
+import type { InterviewQuizError } from './errors'
 import { err, ok } from 'neverthrow'
 import { z } from 'zod/v4'
 import {
@@ -16,6 +17,10 @@ import {
   QuizRoundSubmissionSchema,
   QuizStrategy,
 } from './contracts'
+import {
+  createInterviewQuizError,
+  InterviewQuizErrorCode,
+} from './errors'
 
 export enum QuizInterruptKind {
   Round = 'interview_quiz_round',
@@ -79,10 +84,7 @@ export const QuizNextRoundDecisionSchema = z.object({
 
 export type QuizNextRoundDecision = z.infer<typeof QuizNextRoundDecisionSchema>
 
-export interface QuizExecutionError {
-  code: string
-  message: string
-}
+export type QuizExecutionError = InterviewQuizError
 
 export type SubmissionValidationResult = Result<
   QuizRoundSubmission,
@@ -168,18 +170,16 @@ export function validateSubmission(
 ): SubmissionValidationResult {
   const parsed = QuizRoundSubmissionSchema.safeParse(candidate)
   if (!parsed.success) {
-    return err({
-      code: 'invalid_submission_shape',
-      message: '提交的题卷格式不合法',
-    })
+    return err(createInterviewQuizError(
+      InterviewQuizErrorCode.InvalidSubmissionShape,
+    ))
   }
 
   const submission = parsed.data
   if (submission.reviewId !== plan.reviewId) {
-    return err({
-      code: 'review_id_mismatch',
-      message: '提交内容不属于当前题卷',
-    })
+    return err(createInterviewQuizError(
+      InterviewQuizErrorCode.ReviewIdMismatch,
+    ))
   }
 
   const questionById = new Map(
@@ -189,56 +189,50 @@ export function validateSubmission(
 
   for (const answer of submission.answers) {
     if (answeredQuestionIds.has(answer.questionId)) {
-      return err({
-        code: 'duplicate_question_answer',
-        message: '同一道题被重复提交',
-      })
+      return err(createInterviewQuizError(
+        InterviewQuizErrorCode.DuplicateQuestionAnswer,
+      ))
     }
 
     const question = questionById.get(answer.questionId)
     if (!question) {
-      return err({
-        code: 'unknown_question_id',
-        message: '提交中包含未知题目',
-      })
+      return err(createInterviewQuizError(
+        InterviewQuizErrorCode.UnknownQuestionId,
+      ))
     }
 
     const selectedSet = new Set(answer.selectedOptionIds)
     if (selectedSet.size !== answer.selectedOptionIds.length) {
-      return err({
-        code: 'duplicate_selected_option',
-        message: '同一选项被重复提交',
-      })
+      return err(createInterviewQuizError(
+        InterviewQuizErrorCode.DuplicateSelectedOption,
+      ))
     }
 
     const validOptionIds = new Set(
       question.options.map(option => option.optionId),
     )
     if (!answer.selectedOptionIds.every(id => validOptionIds.has(id))) {
-      return err({
-        code: 'unknown_selected_option',
-        message: '提交中包含未知选项',
-      })
+      return err(createInterviewQuizError(
+        InterviewQuizErrorCode.UnknownSelectedOption,
+      ))
     }
 
     if (
       question.type === QuestionType.Single
       && answer.selectedOptionIds.length !== 1
     ) {
-      return err({
-        code: 'invalid_single_selection_count',
-        message: '单选题必须选择一个选项',
-      })
+      return err(createInterviewQuizError(
+        InterviewQuizErrorCode.InvalidSingleSelectionCount,
+      ))
     }
 
     answeredQuestionIds.add(answer.questionId)
   }
 
   if (answeredQuestionIds.size !== plan.questions.length) {
-    return err({
-      code: 'missing_question_answer',
-      message: '必须回答本轮全部题目',
-    })
+    return err(createInterviewQuizError(
+      InterviewQuizErrorCode.MissingQuestionAnswer,
+    ))
   }
 
   return ok(submission)

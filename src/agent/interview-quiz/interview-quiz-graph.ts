@@ -16,6 +16,10 @@ import {
   QuizStrategy,
 } from './contracts'
 import {
+  createInterviewQuizError,
+  InterviewQuizErrorCode,
+} from './errors'
+import {
   gradeQuizRound,
   projectRoundRequest,
   projectRoundResultRequest,
@@ -114,10 +118,9 @@ export function createInterviewQuizGraph(
       if (!state.roundContext) {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'round_context_missing',
-            message: '当前轮次的规划参数不存在',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundContextMissing,
+          ),
         }
       }
 
@@ -148,10 +151,9 @@ export function createInterviewQuizGraph(
         if (answerEvidence.length === 0) {
           return {
             status: InterviewQuizStatus.Failed,
-            error: {
-              code: 'insufficient_knowledge',
-              message: '当前轮没有可用于证明答案的知识资料',
-            },
+            error: createInterviewQuizError(
+              InterviewQuizErrorCode.InsufficientKnowledge,
+            ),
           }
         }
 
@@ -163,10 +165,9 @@ export function createInterviewQuizGraph(
       catch {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'knowledge_retrieval_failed',
-            message: '检索 Agent 面试资料失败',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.KnowledgeRetrievalFailed,
+          ),
         }
       }
     })
@@ -174,10 +175,9 @@ export function createInterviewQuizGraph(
       if (!state.roundContext) {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'round_context_missing',
-            message: '当前轮次的规划参数不存在',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundContextMissing,
+          ),
         }
       }
 
@@ -218,10 +218,9 @@ export function createInterviewQuizGraph(
       catch {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'planner_call_failed',
-            message: '生成 Agent 面试题失败',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.PlannerCallFailed,
+          ),
         }
       }
     })
@@ -229,10 +228,9 @@ export function createInterviewQuizGraph(
       if (!state.currentPlan) {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'round_plan_missing',
-            message: '当前题卷不存在',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundPlanMissing,
+          ),
         }
       }
 
@@ -256,10 +254,9 @@ export function createInterviewQuizGraph(
       if (!state.currentPlan || !state.submission) {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'grading_input_missing',
-            message: '判分所需的题卷或答案不存在',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.GradingInputMissing,
+          ),
         }
       }
 
@@ -284,10 +281,9 @@ export function createInterviewQuizGraph(
       if (!lastRound) {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'round_result_missing',
-            message: '当前轮次结果不存在',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundResultMissing,
+          ),
         }
       }
 
@@ -301,10 +297,9 @@ export function createInterviewQuizGraph(
       if (!decision.success || decision.data.reviewId !== request.reviewId) {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'invalid_next_round_decision',
-            message: '下一轮操作与当前结果不匹配',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.InvalidNextRoundDecision,
+          ),
         }
       }
 
@@ -315,10 +310,9 @@ export function createInterviewQuizGraph(
       if (!lastRound) {
         return {
           status: InterviewQuizStatus.Failed,
-          error: {
-            code: 'replan_result_missing',
-            message: 'RePlan 缺少上一轮结果',
-          },
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.ReplanResultMissing,
+          ),
         }
       }
 

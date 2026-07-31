@@ -3,6 +3,11 @@ import type { InterviewQuizGraph } from '@/routes/interview-quiz'
 import type { JokeGraph } from '@/routes/jokes'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
+import {
+  createHttpError,
+  HttpErrorCode,
+  HttpStatus,
+} from '@/http/errors'
 import { logger } from '@/logger'
 import { registerInterviewQuizRoutes } from '@/routes/interview-quiz'
 import { registerJokeRoutes } from '@/routes/jokes'
@@ -50,11 +55,8 @@ export function createApp(deps: AppDeps) {
     return c.json({
       requestId: c.get('requestId'),
       status: 'failed',
-      error: {
-        code: 'NOT_FOUND',
-        message: 'The requested endpoint does not exist.',
-      },
-    }, 404)
+      error: createHttpError(HttpErrorCode.NotFound),
+    }, HttpStatus.NotFound)
   })
 
   app.onError((error, c) => {
@@ -72,10 +74,10 @@ export function createApp(deps: AppDeps) {
     return c.json({
       requestId: c.get('requestId'),
       status: 'failed',
-      error: {
-        code: status === 500 ? 'INTERNAL_ERROR' : 'HTTP_ERROR',
+      error: createHttpError(
+        status === 500 ? HttpErrorCode.InternalError : HttpErrorCode.HttpError,
         message,
-      },
+      ),
     }, status)
   })
 

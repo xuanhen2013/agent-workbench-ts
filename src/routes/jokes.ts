@@ -2,6 +2,7 @@ import type { StateSnapshot } from '@langchain/langgraph'
 import type { Context, Hono } from 'hono'
 import type { createInterruptGraph } from '@/agent/interrupt/interrupt-graph'
 import type { AppEnv } from '@/http'
+import type { HttpStatusCode } from '@/http/errors'
 import { Command } from '@langchain/langgraph'
 import { z } from 'zod/v4'
 import {
@@ -9,6 +10,11 @@ import {
   DecisionSchema,
 } from '@/agent/interrupt/interrupt-graph'
 import { InterruptReason, InterruptState } from '@/agent/interrupt/state'
+import {
+  createHttpError,
+  HttpErrorCode,
+  HttpStatus,
+} from '@/http/errors'
 
 export type JokeGraph = ReturnType<typeof createInterruptGraph>
 
@@ -28,7 +34,7 @@ type Projection
   = | { ok: true, view: JokeView }
     | {
       ok: false
-      status: 404 | 409 | 500
+      status: HttpStatusCode
       error: { code: string, message: string }
     }
 
@@ -65,7 +71,7 @@ function graphConfig(threadId: string, signal?: AbortSignal) {
 
 function errorResponse(
   c: Context<AppEnv>,
-  status: 400 | 404 | 409 | 500,
+  status: HttpStatusCode,
   error: { code: string, message: string },
 ) {
   return c.json({
@@ -82,10 +88,7 @@ async function readJson(c: Context<AppEnv>) {
   catch {
     return {
       ok: false as const,
-      error: {
-        code: 'invalid_json',
-        message: 'The request body must be valid JSON.',
-      },
+      error: createHttpError(HttpErrorCode.InvalidJson),
     }
   }
 }
@@ -102,11 +105,8 @@ async function projectJoke(
   if (!state.success) {
     return {
       ok: false,
-      status: 404,
-      error: {
-        code: 'thread_not_found',
-        message: 'The joke thread was not found.',
-      },
+      status: HttpStatus.NotFound,
+      error: createHttpError(HttpErrorCode.ThreadNotFound),
     }
   }
 
@@ -148,21 +148,16 @@ async function projectJoke(
         status: 'failed',
         round: state.data.round,
         ...(state.data.joke ? { joke: state.data.joke } : {}),
-        error: state.data.error ?? {
-          code: 'joke_graph_failed',
-          message: 'The joke graph failed.',
-        },
+        error: state.data.error
+          ?? createHttpError(HttpErrorCode.JokeGraphFailed),
       },
     }
   }
 
   return {
     ok: false,
-    status: 500,
-    error: {
-      code: 'joke_snapshot_inconsistent',
-      message: 'The joke graph stopped without a review or terminal state.',
-    },
+    status: HttpStatus.InternalServerError,
+    error: createHttpError(HttpErrorCode.JokeSnapshotInconsistent),
   }
 }
 
@@ -198,14 +193,15 @@ export function registerJokeRoutes(app: Hono<AppEnv>, graph: JokeGraph) {
   app.post('/api/jokes/:threadId/resume', async (c) => {
     const json = await readJson(c)
     if (!json.ok)
-      return errorResponse(c, 400, json.error)
+      return errorResponse(c, HttpStatus.BadRequest, json.error)
 
     const decision = DecisionSchema.safeParse(json.value)
     if (!decision.success) {
-      return errorResponse(c, 400, {
-        code: 'invalid_request_body',
-        message: 'reviewId and a valid result are required.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidRequestBody),
+      )
     }
 
     const threadId = c.req.param('threadId')
@@ -214,17 +210,19 @@ export function registerJokeRoutes(app: Hono<AppEnv>, graph: JokeGraph) {
       return errorResponse(c, before.status, before.error)
 
     if (!before.view.waiting) {
-      return errorResponse(c, 409, {
-        code: 'thread_not_waiting',
-        message: 'The joke thread is not waiting for a review.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.Conflict,
+        createHttpError(HttpErrorCode.ThreadNotWaiting),
+      )
     }
 
     if (before.view.waiting.reviewId !== decision.data.reviewId) {
-      return errorResponse(c, 409, {
-        code: 'review_id_mismatch',
-        message: 'The decision does not match the pending joke review.',
-      })
+      return errorResponse(
+        c,
+        HttpStatus.Conflict,
+        createHttpError(HttpErrorCode.ReviewIdMismatch),
+      )
     }
 
     await graph.invoke(
