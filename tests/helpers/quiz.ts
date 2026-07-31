@@ -9,7 +9,7 @@ import type {
   QuizPlanResult,
 } from '@/agent/interview-quiz/planning'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
-import type { RetrievedChunk } from '@/knowledge/contracts'
+import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import {
   QuestionType,
@@ -102,11 +102,39 @@ export function createQuizDraft(
   }
 }
 
+function fakeKnowledgeChunk(
+  evidenceRole: KnowledgeEvidenceRole,
+): RetrievedChunk {
+  return {
+    chunkId: `fake:${evidenceRole}`,
+    documentId: 'fake:document',
+    sourceType: KnowledgeSourceType.UserNote,
+    evidenceRole,
+    title: 'Fake knowledge',
+    sourceUri: 'fake:knowledge',
+    heading: 'Fake',
+    text: `Fake ${evidenceRole} for tests.`,
+    ordinal: 0,
+    score: 1,
+  }
+}
+
+const unusedKnowledgeRetriever: Pick<KnowledgeRetriever, 'search'> = {
+  async search(input) {
+    input.signal.throwIfAborted()
+    return []
+  },
+}
+
 export class FakeQuizPlanner extends QuizPlanner {
   readonly calls: QuizPlannerInput[] = []
 
   constructor() {
-    super({} as OpenAI, 'fake-model', { skillCatalog: [] })
+    super({} as OpenAI, 'fake-model', {
+      skillCatalog: [],
+      questionSignalRetriever: unusedKnowledgeRetriever,
+      answerEvidenceRetriever: unusedKnowledgeRetriever,
+    })
   }
 
   override async createRound(
@@ -120,11 +148,16 @@ export class FakeQuizPlanner extends QuizPlanner {
       role: 'assistant',
       content: JSON.stringify(draft),
     }]
+    const retrievedChunks = [
+      ...input.retrievedChunks,
+      fakeKnowledgeChunk(KnowledgeEvidenceRole.AnswerEvidence),
+    ]
 
     return {
       ok: true,
       draft,
       continuationItems,
+      retrievedChunks,
       usage: {
         inputTokens: 1000 + input.round * 100,
         cachedTokens: input.round === 1 ? 0 : 800,
@@ -158,18 +191,7 @@ export class FakeKnowledgeRetriever {
       ? KnowledgeEvidenceRole.QuestionSignal
       : KnowledgeEvidenceRole.AnswerEvidence
 
-    return [{
-      chunkId: `fake:${role}`,
-      documentId: 'fake:document',
-      sourceType: KnowledgeSourceType.UserNote,
-      evidenceRole: role,
-      title: 'Fake knowledge',
-      sourceUri: 'fake:knowledge',
-      heading: 'Fake',
-      text: `Fake ${role} for tests.`,
-      ordinal: 0,
-      score: 1,
-    }].slice(0, input.limit)
+    return [fakeKnowledgeChunk(role)].slice(0, input.limit)
   }
 }
 
@@ -179,7 +201,7 @@ export function createQuizGraphFixture() {
   const graph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
     planner,
-    knowledgeRetriever,
+    questionSignalRetriever: knowledgeRetriever,
   })
   return { graph, planner, knowledgeRetriever }
 }

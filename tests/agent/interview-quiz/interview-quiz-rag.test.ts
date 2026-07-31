@@ -5,15 +5,11 @@ import {
   InterviewQuizStatus,
   QuizDifficulty,
 } from '@/agent/interview-quiz/contracts'
-import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import {
   QuizRoundRequestSchema,
 } from '@/agent/interview-quiz/execution'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
-import {
-  KnowledgeEvidenceRole,
-  KnowledgeSourceType,
-} from '@/knowledge/contracts'
+import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
 import {
   createQuizGraphFixture,
   FakeKnowledgeRetriever,
@@ -40,13 +36,13 @@ function findRoundRequest(snapshot: StateSnapshot) {
 }
 
 describe('Interview Quiz Graph RAG', () => {
-  test('retrieve_knowledge 两次过滤，并把 Chunk 快照交给 Planner', async () => {
+  test('Graph 只预取 question_signal，Planner 返回动态 answer_evidence', async () => {
     const planner = new FakeQuizPlanner()
     const knowledgeRetriever = new FakeKnowledgeRetriever()
     const graph = createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
       planner,
-      knowledgeRetriever,
+      questionSignalRetriever: knowledgeRetriever,
     })
     const threadId = 'quiz-rag-thread'
 
@@ -62,35 +58,20 @@ describe('Interview Quiz Graph RAG', () => {
     findRoundRequest(snapshot)
     expect(knowledgeRetriever.calls.map(call => call.role)).toEqual([
       'question_signal',
-      'answer_evidence',
     ])
-    expect(planner.calls[0]?.retrievedChunks).toHaveLength(2)
+    expect(planner.calls[0]?.retrievedChunks).toHaveLength(1)
     expect(snapshot.values.retrievedChunks).toHaveLength(2)
   })
 
-  test('没有 answer_evidence 时 Graph 进入稳定失败状态', async () => {
+  test('没有 question_signal 时仍交给 Planner 决定是否追加检索', async () => {
     const planner = new FakeQuizPlanner()
     const graph = createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
       planner,
-      knowledgeRetriever: {
+      questionSignalRetriever: {
         async search(input) {
           input.signal.throwIfAborted()
-          return input.filter?.evidenceRoles?.[0]
-            === KnowledgeEvidenceRole.AnswerEvidence
-            ? []
-            : [{
-                chunkId: 'signal-1',
-                documentId: 'doc-1',
-                sourceType: KnowledgeSourceType.UserNote,
-                evidenceRole: KnowledgeEvidenceRole.QuestionSignal,
-                title: 'Signal',
-                sourceUri: 'fixture:signal',
-                heading: 'Signal',
-                text: 'Only a question signal.',
-                ordinal: 0,
-                score: 1,
-              }]
+          return []
         },
       },
     })
@@ -105,40 +86,18 @@ describe('Interview Quiz Graph RAG', () => {
     }, config(threadId))
 
     const snapshot = await graph.getState(config(threadId))
-    expect(snapshot.values.status).toBe(InterviewQuizStatus.Failed)
-    expect(snapshot.values.error).toEqual({
-      code: InterviewQuizErrorCode.InsufficientKnowledge,
-      message: '当前轮没有可用于证明答案的知识资料',
-    })
+    findRoundRequest(snapshot)
+    expect(snapshot.values.status).toBe(InterviewQuizStatus.WaitingForAnswers)
+    expect(planner.calls[0]?.retrievedChunks).toEqual([])
   })
 
-  test('可将远程答案证据 Retriever 与本地 question_signal Retriever 分开', async () => {
+  test('Graph 不持有也不调用 answer_evidence Retriever', async () => {
     const planner = new FakeQuizPlanner()
     const questionSignalRetriever = new FakeKnowledgeRetriever()
-    const answerEvidenceRetriever = {
-      calls: 0,
-      async search(input: Parameters<FakeKnowledgeRetriever['search']>[0]) {
-        input.signal.throwIfAborted()
-        this.calls += 1
-        return [{
-          chunkId: 'remote:answer-evidence',
-          documentId: 'remote:document',
-          sourceType: KnowledgeSourceType.Official,
-          evidenceRole: KnowledgeEvidenceRole.AnswerEvidence,
-          title: 'Remote evidence',
-          sourceUri: 'cloudflare-ai-search:remote',
-          heading: 'Remote',
-          text: 'Remote verified answer evidence.',
-          ordinal: 0,
-          score: 0.9,
-        }]
-      },
-    }
     const graph = createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
       planner,
-      knowledgeRetriever: questionSignalRetriever,
-      answerEvidenceRetriever,
+      questionSignalRetriever,
     })
     const threadId = 'quiz-rag-split-retriever-thread'
 
@@ -152,13 +111,12 @@ describe('Interview Quiz Graph RAG', () => {
 
     findRoundRequest(await graph.getState(config(threadId)))
     expect(questionSignalRetriever.calls).toHaveLength(1)
-    expect(answerEvidenceRetriever.calls).toBe(1)
-    expect(planner.calls[0]?.retrievedChunks[1]?.sourceUri)
-      .toBe('cloudflare-ai-search:remote')
+    expect(questionSignalRetriever.calls[0]?.role).toBe('question_signal')
+    expect(planner.calls[0]?.retrievedChunks).toHaveLength(1)
   })
 
   test('RePlan 检索 Query 会携带上一轮错误知识点', async () => {
-    const { graph, knowledgeRetriever } = createQuizGraphFixture()
+    const { graph, knowledgeRetriever, planner } = createQuizGraphFixture()
     const threadId = 'quiz-rag-replan-thread'
 
     await graph.invoke({
@@ -183,7 +141,9 @@ describe('Interview Quiz Graph RAG', () => {
       resume: { reviewId: review.reviewId, action: 'next_round' },
     }), config(threadId))
 
-    expect(knowledgeRetriever.calls).toHaveLength(4)
-    expect(knowledgeRetriever.calls[2]?.query).toContain('StateGraph')
+    expect(knowledgeRetriever.calls).toHaveLength(2)
+    expect(knowledgeRetriever.calls[1]?.query).toContain('StateGraph')
+    expect(planner.calls[1]?.retrievedChunks.map(chunk => chunk.evidenceRole))
+      .toEqual([KnowledgeEvidenceRole.QuestionSignal])
   })
 })

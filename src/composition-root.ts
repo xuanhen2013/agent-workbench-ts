@@ -83,6 +83,9 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
   )
   const cloudflareAnswerEvidenceRetriever
     = createCloudflareAiSearchRetrieverFromEnv(process.env)
+  const questionSignalRetriever = knowledgeRetriever
+  const answerEvidenceRetriever
+    = cloudflareAnswerEvidenceRetriever ?? knowledgeRetriever
 
   const { client, model } = createOpenAIModelClient()
   const jokeGraph = createInterruptGraph({
@@ -91,11 +94,12 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
   })
   const interviewQuizGraph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
-    planner: new QuizPlanner(client, model, { skillCatalog }),
-    knowledgeRetriever,
-    ...(cloudflareAnswerEvidenceRetriever
-      ? { answerEvidenceRetriever: cloudflareAnswerEvidenceRetriever }
-      : {}),
+    planner: new QuizPlanner(client, model, {
+      skillCatalog,
+      questionSignalRetriever,
+      answerEvidenceRetriever,
+    }),
+    questionSignalRetriever,
   })
 
   return { interviewQuizGraph, jokeGraph }

@@ -60,7 +60,7 @@ export const InterviewQuizStateSchema = new StateSchema({
   /** 当前 Planner 调用的 usage，在 verify 时并入完成轮次。 */
   currentModelUsage: z.custom<QuizModelUsage>().nullable().default(null),
 
-  /** 当前轮检索结果快照；每轮由 retrieve_knowledge 覆盖，不跨轮累积。 */
+  /** 当前轮检索结果快照；固定预取和 Planner Tool 都只服务当前轮。 */
   retrievedChunks: z.custom<RetrievedChunk[]>().default(() => []),
 
   /** 已完成轮次。verify 每次只返回一个新元素，由 Reducer 追加。 */

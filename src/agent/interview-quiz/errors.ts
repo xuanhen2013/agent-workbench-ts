@@ -22,7 +22,11 @@ export enum InterviewQuizErrorCode {
 
   // Planner / Skill
   SkillToolFailed = 'quiz_skill_tool_failed',
-  SkillRoundLimit = 'quiz_skill_round_limit',
+  KnowledgeToolFailed = 'quiz_knowledge_tool_failed',
+  PlannerToolRoundLimit = 'quiz_planner_tool_round_limit',
+  QuestionSignalSearchLimit = 'quiz_question_signal_search_limit',
+  AnswerEvidenceSearchLimit = 'quiz_answer_evidence_search_limit',
+  AnswerEvidenceMissing = 'quiz_answer_evidence_missing',
   SkillFinalOutputMissing = 'quiz_skill_final_output_missing',
   RequiredSkillMissing = 'quiz_required_skill_missing',
   PlannerJsonInvalid = 'planner_json_invalid',
@@ -69,7 +73,11 @@ export const InterviewQuizErrorMessages = {
   [InterviewQuizErrorCode.ReplanResultMissing]: 'RePlan 缺少上一轮结果',
 
   [InterviewQuizErrorCode.SkillToolFailed]: 'Skill Tool 执行失败。',
-  [InterviewQuizErrorCode.SkillRoundLimit]: 'Skill Tool 调用超过允许轮次。',
+  [InterviewQuizErrorCode.KnowledgeToolFailed]: '知识检索 Tool 执行失败。',
+  [InterviewQuizErrorCode.PlannerToolRoundLimit]: 'Planner Tool 调用超过允许轮次。',
+  [InterviewQuizErrorCode.QuestionSignalSearchLimit]: '常考题方向搜索超过允许次数。',
+  [InterviewQuizErrorCode.AnswerEvidenceSearchLimit]: '答案证据搜索超过允许次数。',
+  [InterviewQuizErrorCode.AnswerEvidenceMissing]: '当前轮没有检索到可用于证明答案的知识资料。',
   [InterviewQuizErrorCode.SkillFinalOutputMissing]: '模型没有返回最终题目。',
   [InterviewQuizErrorCode.RequiredSkillMissing]: '生成题目前必须加载所需的出题和检索 Skill。',
   [InterviewQuizErrorCode.PlannerJsonInvalid]: '模型没有返回合法 JSON',

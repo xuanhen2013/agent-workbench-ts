@@ -31,13 +31,8 @@ import { InterviewQuizStateSchema } from './state'
 export interface CreateInterviewQuizGraphOptions {
   checkpointer: BaseCheckpointSaver
   planner: Pick<QuizPlanner, 'createRound' | 'materializeRoundPlan'>
-  /** 本地题库等 question_signal 的默认检索入口。 */
-  knowledgeRetriever: Pick<KnowledgeRetriever, 'search'>
-  /**
-   * 可选的远程答案证据入口。未提供时仍复用 knowledgeRetriever，
-   * 因此现有 Fake/InMemory 测试和离线模式不需要两套依赖。
-   */
-  answerEvidenceRetriever?: Pick<KnowledgeRetriever, 'search'>
+  /** Graph 首次固定预取 question_signal；追加检索由 Planner Tool 负责。 */
+  questionSignalRetriever: Pick<KnowledgeRetriever, 'search'>
 }
 
 function raiseDifficulty(difficulty: QuizDifficulty) {
@@ -120,7 +115,7 @@ export function createInterviewQuizGraph(
         status: InterviewQuizStatus.Planning,
       }
     })
-    .addNode('retrieve_knowledge', async (state, { signal }) => {
+    .addNode('retrieve_question_signals', async (state, { signal }) => {
       if (!state.roundContext) {
         return {
           status: InterviewQuizStatus.Failed,
@@ -132,36 +127,17 @@ export function createInterviewQuizGraph(
 
       try {
         const query = buildKnowledgeQuery(state)
-        const [questionSignals, answerEvidence] = await Promise.all([
-          options.knowledgeRetriever.search({
-            query,
-            limit: 4,
-            filter: {
-              evidenceRoles: [KnowledgeEvidenceRole.QuestionSignal],
-            },
-            signal,
-          }),
-          (options.answerEvidenceRetriever ?? options.knowledgeRetriever).search({
-            query,
-            limit: 8,
-            filter: {
-              evidenceRoles: [KnowledgeEvidenceRole.AnswerEvidence],
-            },
-            signal,
-          }),
-        ])
-
-        if (answerEvidence.length === 0) {
-          return {
-            status: InterviewQuizStatus.Failed,
-            error: createInterviewQuizError(
-              InterviewQuizErrorCode.InsufficientKnowledge,
-            ),
-          }
-        }
+        const questionSignals = await options.questionSignalRetriever.search({
+          query,
+          limit: 4,
+          filter: {
+            evidenceRoles: [KnowledgeEvidenceRole.QuestionSignal],
+          },
+          signal,
+        })
 
         return {
-          retrievedChunks: [...questionSignals, ...answerEvidence],
+          retrievedChunks: questionSignals,
           status: InterviewQuizStatus.Planning,
         }
       }
@@ -208,9 +184,13 @@ export function createInterviewQuizGraph(
 
         return {
           modelHistory: result.continuationItems,
+          retrievedChunks: result.retrievedChunks,
           currentPlan: options.planner.materializeRoundPlan({
             threadId: state.threadId,
-            plannerInput,
+            plannerInput: {
+              ...plannerInput,
+              retrievedChunks: result.retrievedChunks,
+            },
             draft: result.draft,
           }),
           submission: null,
@@ -348,8 +328,8 @@ export function createInterviewQuizGraph(
       completionReason: QuizCompletionReason.MaxRounds,
     }))
     .addEdge(START, 'initialize')
-    .addEdge('initialize', 'retrieve_knowledge')
-    .addConditionalEdges('retrieve_knowledge', state => (
+    .addEdge('initialize', 'retrieve_question_signals')
+    .addConditionalEdges('retrieve_question_signals', state => (
       state.status === InterviewQuizStatus.Failed ? END : 'plan_execute'
     ))
     .addConditionalEdges('plan_execute', state => (
@@ -373,7 +353,7 @@ export function createInterviewQuizGraph(
     .addConditionalEdges('wait_next_round', state => (
       state.status === InterviewQuizStatus.Failed ? END : 'replan'
     ))
-    .addEdge('replan', 'retrieve_knowledge')
+    .addEdge('replan', 'retrieve_question_signals')
     .addEdge('finish', END)
     .compile({ checkpointer: options.checkpointer })
 }

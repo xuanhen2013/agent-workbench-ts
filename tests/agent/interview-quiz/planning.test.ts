@@ -4,7 +4,7 @@ import type {
   QuizPlanResult,
 } from '@/agent/interview-quiz/planning'
 import type { OpenAIResponse } from '@/clients/openai'
-import type { RetrievedChunk } from '@/knowledge/contracts'
+import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
 import type { SkillCatalogEntry } from '@/skills/contracts'
 import { describe, expect, test } from 'bun:test'
 import {
@@ -15,7 +15,9 @@ import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import {
   AGENT_QUIZ_INSTRUCTIONS,
   AGENT_QUIZ_PROMPT_CACHE_KEY,
-  MAX_SKILL_TOOL_ROUNDS,
+  MAX_ANSWER_EVIDENCE_SEARCHES,
+  MAX_PLANNER_TOOL_ROUNDS,
+  MAX_QUESTION_SIGNAL_SEARCHES,
   QuizPlanner,
 } from '@/agent/interview-quiz/planning'
 import {
@@ -23,8 +25,9 @@ import {
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
 import { SkillName } from '@/skills/contracts'
+import { KnowledgeToolName } from '@/tools/knowledge'
 import { SkillToolName } from '@/tools/skill'
-import { createQuizDraft } from '../../helpers/quiz'
+import { createQuizDraft as createRawQuizDraft } from '../../helpers/quiz'
 
 const skillCatalog: readonly SkillCatalogEntry[] = [{
   name: SkillName.QuestionAuthoring,
@@ -49,9 +52,10 @@ const knowledgeSkillCatalog: readonly SkillCatalogEntry[] = [
 
 function knowledgeChunk(
   evidenceRole = KnowledgeEvidenceRole.AnswerEvidence,
+  chunkId = `chunk:${evidenceRole}`,
 ): RetrievedChunk {
   return {
-    chunkId: `chunk:${evidenceRole}`,
+    chunkId,
     documentId: 'document:knowledge',
     sourceType: KnowledgeSourceType.UserNote,
     evidenceRole,
@@ -61,6 +65,47 @@ function knowledgeChunk(
     text: 'LangGraph Node 读取 State 并返回局部状态更新。',
     ordinal: 0,
     score: 1,
+  }
+}
+
+function createQuizDraft(round = 2) {
+  const evidence = knowledgeChunk()
+  const draft = createRawQuizDraft(round)
+  return {
+    ...draft,
+    questions: draft.questions.map(question => ({
+      ...question,
+      sourceChunkIds: [evidence.chunkId],
+    })),
+  }
+}
+
+class FakePlannerKnowledgeRetriever implements Pick<KnowledgeRetriever, 'search'> {
+  readonly calls: Parameters<KnowledgeRetriever['search']>[0][] = []
+
+  async search(
+    input: Parameters<KnowledgeRetriever['search']>[0],
+  ): Promise<RetrievedChunk[]> {
+    input.signal.throwIfAborted()
+    this.calls.push(input)
+    const role = input.filter?.evidenceRoles?.[0]
+      ?? KnowledgeEvidenceRole.AnswerEvidence
+    return [knowledgeChunk(role)]
+  }
+}
+
+class BatchedKnowledgeRetriever implements Pick<KnowledgeRetriever, 'search'> {
+  readonly calls: Parameters<KnowledgeRetriever['search']>[0][] = []
+
+  constructor(private readonly batches: RetrievedChunk[][]) {}
+
+  async search(
+    input: Parameters<KnowledgeRetriever['search']>[0],
+  ): Promise<RetrievedChunk[]> {
+    input.signal.throwIfAborted()
+    const batch = this.batches[this.calls.length] ?? []
+    this.calls.push(input)
+    return batch
   }
 }
 
@@ -170,10 +215,31 @@ function readResourcesResponse() {
   ], 200)
 }
 
+function searchQuestionSignalResponse(
+  callId = 'search-question-signal-call',
+) {
+  return functionCallResponse([{
+    callId,
+    name: KnowledgeToolName.SearchQuestionSignal,
+    arguments: { query: 'LangGraph 高频面试误区' },
+  }])
+}
+
+function searchAnswerEvidenceResponse(
+  callId = 'search-answer-evidence-call',
+) {
+  return functionCallResponse([{
+    callId,
+    name: KnowledgeToolName.SearchAnswerEvidence,
+    arguments: { query: 'LangGraph StateGraph Node state update' },
+  }])
+}
+
 function skillTrace(outputText: string): OpenAIResponse[] {
   return [
     loadSkillResponse(),
     readResourcesResponse(),
+    searchAnswerEvidenceResponse(),
     finalResponse(outputText),
   ]
 }
@@ -212,13 +278,25 @@ function validPlannerInput(): QuizPlannerInput {
   }
 }
 
+function plannerOptions(
+  catalog: readonly SkillCatalogEntry[] = skillCatalog,
+) {
+  return {
+    skillCatalog: catalog,
+    questionSignalRetriever: new FakePlannerKnowledgeRetriever(),
+    answerEvidenceRetriever: new FakePlannerKnowledgeRetriever(),
+  }
+}
+
 function createPlanner(
   responses: readonly OpenAIResponse[],
   catalog: readonly SkillCatalogEntry[] = skillCatalog,
 ) {
-  return new QuizPlanner(fakeClient(responses), 'fake-model', {
-    skillCatalog: catalog,
-  })
+  return new QuizPlanner(
+    fakeClient(responses),
+    'fake-model',
+    plannerOptions(catalog),
+  )
 }
 
 async function createRound(outputText: string): Promise<QuizPlanResult> {
@@ -259,28 +337,29 @@ describe('QuizPlanner', () => {
       id: 'final-message',
     })
     expect(JSON.stringify(result.continuationItems)).not.toContain('load-skill-call')
+    expect(result.retrievedChunks).toEqual([knowledgeChunk()])
     expect(result.usage).toEqual({
-      inputTokens: 600,
+      inputTokens: 700,
       cachedTokens: 200,
       cacheWriteTokens: 0,
     })
   })
 
-  test('三轮请求复用 toModelTurn continuation，并保持 metadata 前缀与稳定 cache key', async () => {
+  test('四轮请求复用 toModelTurn continuation，并保持 metadata 前缀与稳定 cache key', async () => {
     const requests: Array<Record<string, unknown>> = []
     const draft = createQuizDraft(2)
     const input = validPlannerInput()
     const planner = new QuizPlanner(
       fakeClient(skillTrace(JSON.stringify(draft)), params => requests.push(params)),
       'fake-model',
-      { skillCatalog },
+      plannerOptions(),
     )
 
     await planner.createRound(input, {
       signal: new AbortController().signal,
     })
 
-    expect(requests).toHaveLength(3)
+    expect(requests).toHaveLength(4)
     expect(requests[0]).toMatchObject({
       instructions: AGENT_QUIZ_INSTRUCTIONS,
       prompt_cache_key: AGENT_QUIZ_PROMPT_CACHE_KEY,
@@ -288,7 +367,7 @@ describe('QuizPlanner', () => {
       parallel_tool_calls: true,
       store: false,
     })
-    expect(AGENT_QUIZ_PROMPT_CACHE_KEY).toBe('agent-interview-quiz:v2')
+    expect(AGENT_QUIZ_PROMPT_CACHE_KEY).toBe('agent-interview-quiz:v3')
     expect(AGENT_QUIZ_PROMPT_CACHE_KEY).not.toContain('thread')
 
     const firstInput = requests[0]!.input as Array<Record<string, unknown>>
@@ -316,39 +395,220 @@ describe('QuizPlanner', () => {
     expect(thirdInput.filter(item => item.type === 'function_call_output')).toHaveLength(4)
     expect(JSON.stringify(thirdInput)).toContain('Exactly one option')
     expect(JSON.stringify(thirdInput)).toContain('At least two options')
+
+    const fourthInput = requests[3]!.input as Array<Record<string, unknown>>
+    expect(fourthInput.filter(item => item.type === 'function_call')).toHaveLength(5)
+    expect(fourthInput.filter(item => item.type === 'function_call_output')).toHaveLength(5)
+    expect(JSON.stringify(fourthInput)).toContain(knowledgeChunk().chunkId)
   })
 
-  test('RAG 模式按需加载两个 Skill，并把当前轮 Chunk 放进请求而不是 continuation', async () => {
+  test('RAG 模式加载两个 Skill，并通过两个 Tool 动态追加资料', async () => {
     const requests: Array<Record<string, unknown>> = []
     const evidence = knowledgeChunk()
+    const signal = knowledgeChunk(KnowledgeEvidenceRole.QuestionSignal)
     const draft = createQuizDraft(2)
-    draft.questions = draft.questions.map(question => ({
-      ...question,
-      sourceChunkIds: [evidence.chunkId],
-    }))
+    const questionSignalRetriever = new FakePlannerKnowledgeRetriever()
+    const answerEvidenceRetriever = new FakePlannerKnowledgeRetriever()
     const planner = new QuizPlanner(
       fakeClient([
         loadBothSkillsResponse(),
         readResourcesResponse(),
+        searchQuestionSignalResponse(),
+        searchAnswerEvidenceResponse(),
         finalResponse(JSON.stringify(draft)),
       ], params => requests.push(params)),
       'fake-model',
-      { skillCatalog: knowledgeSkillCatalog },
+      {
+        skillCatalog: knowledgeSkillCatalog,
+        questionSignalRetriever,
+        answerEvidenceRetriever,
+      },
     )
 
     const result = await planner.createRound({
       ...validPlannerInput(),
-      retrievedChunks: [evidence],
+      retrievedChunks: [signal],
     }, { signal: new AbortController().signal })
 
     expect(result.ok).toBe(true)
-    expect(JSON.stringify(requests[0]?.input)).toContain(evidence.chunkId)
+    expect(JSON.stringify(requests[0]?.input)).toContain(signal.chunkId)
+    expect(JSON.stringify(requests[0]?.input)).not.toContain(evidence.chunkId)
     expect(JSON.stringify(requests[1]?.input)).toContain('# Knowledge Retrieval')
+    expect(questionSignalRetriever.calls).toHaveLength(1)
+    expect(answerEvidenceRetriever.calls).toHaveLength(1)
     if (result.ok) {
+      expect(result.retrievedChunks).toEqual([signal, evidence])
       expect(JSON.stringify(result.continuationItems)).not.toContain(
         '<retrieved_knowledge>',
       )
+      expect(JSON.stringify(result.continuationItems)).not.toContain(
+        'search-answer-evidence-call',
+      )
     }
+  })
+
+  test('没有 answer_evidence 就输出时返回稳定错误', async () => {
+    const result = await createPlanner([
+      loadSkillResponse(),
+      finalResponse(JSON.stringify(createQuizDraft(2))),
+    ]).createRound(validPlannerInput(), {
+      signal: new AbortController().signal,
+    })
+
+    expectPlannerError(result, InterviewQuizErrorCode.AnswerEvidenceMissing)
+  })
+
+  test('Question Signal 搜索超额时在执行任何搜索前拒绝整轮', async () => {
+    const questionSignalRetriever = new FakePlannerKnowledgeRetriever()
+    const calls = Array.from(
+      { length: MAX_QUESTION_SIGNAL_SEARCHES + 1 },
+      (_, index) => ({
+        callId: `question-signal-${index}`,
+        name: KnowledgeToolName.SearchQuestionSignal,
+        arguments: { query: `LangGraph 高频误区 ${index}` },
+      }),
+    )
+    const planner = new QuizPlanner(
+      fakeClient([loadSkillResponse(), functionCallResponse(calls)]),
+      'fake-model',
+      {
+        skillCatalog,
+        questionSignalRetriever,
+        answerEvidenceRetriever: new FakePlannerKnowledgeRetriever(),
+      },
+    )
+
+    const result = await planner.createRound(validPlannerInput(), {
+      signal: new AbortController().signal,
+    })
+
+    expectPlannerError(
+      result,
+      InterviewQuizErrorCode.QuestionSignalSearchLimit,
+    )
+    expect(questionSignalRetriever.calls).toHaveLength(0)
+  })
+
+  test('Answer Evidence 搜索超额时在执行任何搜索前拒绝整轮', async () => {
+    const answerEvidenceRetriever = new FakePlannerKnowledgeRetriever()
+    const calls = Array.from(
+      { length: MAX_ANSWER_EVIDENCE_SEARCHES + 1 },
+      (_, index) => ({
+        callId: `answer-evidence-${index}`,
+        name: KnowledgeToolName.SearchAnswerEvidence,
+        arguments: { query: `LangGraph 官方证据 ${index}` },
+      }),
+    )
+    const planner = new QuizPlanner(
+      fakeClient([loadSkillResponse(), functionCallResponse(calls)]),
+      'fake-model',
+      {
+        skillCatalog,
+        questionSignalRetriever: new FakePlannerKnowledgeRetriever(),
+        answerEvidenceRetriever,
+      },
+    )
+
+    const result = await planner.createRound(validPlannerInput(), {
+      signal: new AbortController().signal,
+    })
+
+    expectPlannerError(
+      result,
+      InterviewQuizErrorCode.AnswerEvidenceSearchLimit,
+    )
+    expect(answerEvidenceRetriever.calls).toHaveLength(0)
+  })
+
+  test('Knowledge Tool 失败时隐藏 Retriever 原始异常', async () => {
+    const failingRetriever: Pick<KnowledgeRetriever, 'search'> = {
+      async search() {
+        throw new Error('secret cloudflare response')
+      },
+    }
+    const planner = new QuizPlanner(
+      fakeClient([loadSkillResponse(), searchAnswerEvidenceResponse()]),
+      'fake-model',
+      {
+        skillCatalog,
+        questionSignalRetriever: new FakePlannerKnowledgeRetriever(),
+        answerEvidenceRetriever: failingRetriever,
+      },
+    )
+
+    const result = await planner.createRound(validPlannerInput(), {
+      signal: new AbortController().signal,
+    })
+
+    expectPlannerError(result, InterviewQuizErrorCode.KnowledgeToolFailed)
+    if (!result.ok)
+      expect(result.error.message).not.toContain('secret')
+  })
+
+  test('两种 Chunk 分别限量，丢弃项既不进 State 也不回传模型', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    const initialSignals = Array.from({ length: 4 }, (_, index) => (
+      knowledgeChunk(
+        KnowledgeEvidenceRole.QuestionSignal,
+        `initial-signal:${index}`,
+      )
+    ))
+    const extraSignals = Array.from({ length: 5 }, (_, index) => (
+      knowledgeChunk(
+        KnowledgeEvidenceRole.QuestionSignal,
+        `extra-signal:${index}`,
+      )
+    ))
+    const allEvidence = Array.from({ length: 15 }, (_, index) => (
+      knowledgeChunk(
+        KnowledgeEvidenceRole.AnswerEvidence,
+        `answer-evidence:${index}`,
+      )
+    ))
+    const answerEvidenceRetriever = new BatchedKnowledgeRetriever([
+      allEvidence.slice(0, 5),
+      allEvidence.slice(5, 10),
+      allEvidence.slice(10, 15),
+    ])
+    const draft = createQuizDraft(2)
+    draft.questions = draft.questions.map(question => ({
+      ...question,
+      sourceChunkIds: ['answer-evidence:0'],
+    }))
+    const planner = new QuizPlanner(
+      fakeClient([
+        loadSkillResponse(),
+        searchQuestionSignalResponse(),
+        searchAnswerEvidenceResponse('answer-search-1'),
+        searchAnswerEvidenceResponse('answer-search-2'),
+        searchAnswerEvidenceResponse('answer-search-3'),
+        finalResponse(JSON.stringify(draft)),
+      ], params => requests.push(params)),
+      'fake-model',
+      {
+        skillCatalog,
+        questionSignalRetriever: new BatchedKnowledgeRetriever([extraSignals]),
+        answerEvidenceRetriever,
+      },
+    )
+
+    const result = await planner.createRound({
+      ...validPlannerInput(),
+      retrievedChunks: initialSignals,
+    }, { signal: new AbortController().signal })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok)
+      throw new Error(result.error.code)
+
+    expect(result.retrievedChunks.filter(chunk => (
+      chunk.evidenceRole === KnowledgeEvidenceRole.QuestionSignal
+    ))).toHaveLength(8)
+    expect(result.retrievedChunks.filter(chunk => (
+      chunk.evidenceRole === KnowledgeEvidenceRole.AnswerEvidence
+    ))).toHaveLength(12)
+    expect(JSON.stringify(requests.at(-1)?.input)).toContain('answer-evidence:11')
+    expect(JSON.stringify(requests.at(-1)?.input)).not.toContain('answer-evidence:12')
   })
 
   test('未加载必需 Skill 就直接输出时失败', async () => {
@@ -381,9 +641,9 @@ describe('QuizPlanner', () => {
       expect(result.error.message).toBe('Skill Tool 执行失败。')
   })
 
-  test('超过 Skill Tool 轮次预算时停止', async () => {
+  test('超过 Planner Tool 轮次预算时停止', async () => {
     const repeatedCalls = Array.from(
-      { length: MAX_SKILL_TOOL_ROUNDS + 1 },
+      { length: MAX_PLANNER_TOOL_ROUNDS + 1 },
       () => loadSkillResponse(),
     )
     const result = await createPlanner(repeatedCalls)
@@ -391,12 +651,13 @@ describe('QuizPlanner', () => {
         signal: new AbortController().signal,
       })
 
-    expectPlannerError(result, InterviewQuizErrorCode.SkillRoundLimit)
+    expectPlannerError(result, InterviewQuizErrorCode.PlannerToolRoundLimit)
   })
 
   test('加载 Skill 后没有最终文本时返回 final output missing', async () => {
     const result = await createPlanner([
       loadSkillResponse(),
+      searchAnswerEvidenceResponse(),
       {
         output: [],
         output_text: '',
