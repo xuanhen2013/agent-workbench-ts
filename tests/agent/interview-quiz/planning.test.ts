@@ -4,6 +4,7 @@ import type {
   QuizPlanResult,
 } from '@/agent/interview-quiz/planning'
 import type { OpenAIResponse } from '@/clients/openai'
+import type { RetrievedChunk } from '@/knowledge/contracts'
 import type { SkillCatalogEntry } from '@/skills/contracts'
 import { describe, expect, test } from 'bun:test'
 import {
@@ -17,6 +18,10 @@ import {
   QuizPlanner,
   QuizSkillErrorCode,
 } from '@/agent/interview-quiz/planning'
+import {
+  KnowledgeEvidenceRole,
+  KnowledgeSourceType,
+} from '@/knowledge/contracts'
 import { SkillName } from '@/skills/contracts'
 import { SkillToolName } from '@/tools/skill'
 import { createQuizDraft } from '../../helpers/quiz'
@@ -29,6 +34,35 @@ const skillCatalog: readonly SkillCatalogEntry[] = [{
     import.meta.url,
   ),
 }]
+
+const knowledgeSkillCatalog: readonly SkillCatalogEntry[] = [
+  ...skillCatalog,
+  {
+    name: SkillName.KnowledgeRetrieval,
+    description: 'Test knowledge retrieval instructions.',
+    root: new URL(
+      '../../../skills/knowledge-retrieval/',
+      import.meta.url,
+    ),
+  },
+]
+
+function knowledgeChunk(
+  evidenceRole = KnowledgeEvidenceRole.AnswerEvidence,
+): RetrievedChunk {
+  return {
+    chunkId: `chunk:${evidenceRole}`,
+    documentId: 'document:knowledge',
+    sourceType: KnowledgeSourceType.UserNote,
+    evidenceRole,
+    title: 'Knowledge',
+    sourceUri: 'fixture:knowledge',
+    heading: 'Knowledge',
+    text: 'LangGraph Node 读取 State 并返回局部状态更新。',
+    ordinal: 0,
+    score: 1,
+  }
+}
 
 function usage(inputTokens: number, cachedTokens = 0) {
   return {
@@ -90,6 +124,21 @@ function loadSkillResponse() {
     name: SkillToolName.LoadSkill,
     arguments: { skillName: SkillName.QuestionAuthoring },
   }])
+}
+
+function loadBothSkillsResponse() {
+  return functionCallResponse([
+    {
+      callId: 'load-question-authoring-call',
+      name: SkillToolName.LoadSkill,
+      arguments: { skillName: SkillName.QuestionAuthoring },
+    },
+    {
+      callId: 'load-knowledge-retrieval-call',
+      name: SkillToolName.LoadSkill,
+      arguments: { skillName: SkillName.KnowledgeRetrieval },
+    },
+  ])
 }
 
 function readResourcesResponse() {
@@ -159,11 +208,17 @@ function validPlannerInput(): QuizPlannerInput {
     difficulty: QuizDifficulty.Intermediate,
     strategy: QuizStrategy.Advance,
     previousQuestionStems: [],
+    retrievedChunks: [],
   }
 }
 
-function createPlanner(responses: readonly OpenAIResponse[]) {
-  return new QuizPlanner(fakeClient(responses), 'fake-model', { skillCatalog })
+function createPlanner(
+  responses: readonly OpenAIResponse[],
+  catalog: readonly SkillCatalogEntry[] = skillCatalog,
+) {
+  return new QuizPlanner(fakeClient(responses), 'fake-model', {
+    skillCatalog: catalog,
+  })
 }
 
 async function createRound(outputText: string): Promise<QuizPlanResult> {
@@ -234,7 +289,7 @@ describe('QuizPlanner', () => {
     expect(AGENT_QUIZ_PROMPT_CACHE_KEY).not.toContain('thread')
 
     const firstInput = requests[0]!.input as Array<Record<string, unknown>>
-    expect(firstInput).toHaveLength(2)
+    expect(firstInput).toHaveLength(3)
     expect(firstInput[0]).toMatchObject({
       role: 'user',
       content: expect.stringContaining('<available_skills>'),
@@ -243,6 +298,10 @@ describe('QuizPlanner', () => {
     expect(firstInput[1]).toEqual(
       input.history[0] as unknown as Record<string, unknown>,
     )
+    expect(firstInput[2]).toMatchObject({
+      role: 'user',
+      content: expect.stringContaining('<retrieved_knowledge>'),
+    })
 
     const secondInput = requests[1]!.input as Array<Record<string, unknown>>
     expect(secondInput.filter(item => item.type === 'function_call')).toHaveLength(1)
@@ -254,6 +313,39 @@ describe('QuizPlanner', () => {
     expect(thirdInput.filter(item => item.type === 'function_call_output')).toHaveLength(4)
     expect(JSON.stringify(thirdInput)).toContain('Exactly one option')
     expect(JSON.stringify(thirdInput)).toContain('At least two options')
+  })
+
+  test('RAG 模式按需加载两个 Skill，并把当前轮 Chunk 放进请求而不是 continuation', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    const evidence = knowledgeChunk()
+    const draft = createQuizDraft(2)
+    draft.questions = draft.questions.map(question => ({
+      ...question,
+      sourceChunkIds: [evidence.chunkId],
+    }))
+    const planner = new QuizPlanner(
+      fakeClient([
+        loadBothSkillsResponse(),
+        readResourcesResponse(),
+        finalResponse(JSON.stringify(draft)),
+      ], params => requests.push(params)),
+      'fake-model',
+      { skillCatalog: knowledgeSkillCatalog },
+    )
+
+    const result = await planner.createRound({
+      ...validPlannerInput(),
+      retrievedChunks: [evidence],
+    }, { signal: new AbortController().signal })
+
+    expect(result.ok).toBe(true)
+    expect(JSON.stringify(requests[0]?.input)).toContain(evidence.chunkId)
+    expect(JSON.stringify(requests[1]?.input)).toContain('# Knowledge Retrieval')
+    if (result.ok) {
+      expect(JSON.stringify(result.continuationItems)).not.toContain(
+        '<retrieved_knowledge>',
+      )
+    }
   })
 
   test('未加载必需 Skill 就直接输出时失败', async () => {
@@ -367,6 +459,34 @@ describe('QuizPlanner', () => {
     expect(result.isErr()).toBe(true)
     if (result.isErr())
       expect(result.error.code).toBe('repeated_question_stem')
+  })
+
+  test('RAG 引用只接受本轮 answer_evidence Chunk', () => {
+    const planner = createPlanner([])
+    const evidence = knowledgeChunk()
+    const signal = knowledgeChunk(KnowledgeEvidenceRole.QuestionSignal)
+    const draft = createQuizDraft(2)
+    draft.questions = draft.questions.map(question => ({
+      ...question,
+      sourceChunkIds: [evidence.chunkId],
+    }))
+
+    expect(planner._validateQuizRoundDraft(draft, {
+      ...validPlannerInput(),
+      retrievedChunks: [evidence, signal],
+    }).isOk()).toBe(true)
+
+    draft.questions[0] = {
+      ...draft.questions[0]!,
+      sourceChunkIds: [signal.chunkId],
+    }
+    const invalid = planner._validateQuizRoundDraft(draft, {
+      ...validPlannerInput(),
+      retrievedChunks: [evidence, signal],
+    })
+    expect(invalid.isErr()).toBe(true)
+    if (invalid.isErr())
+      expect(invalid.error.code).toBe('unknown_source_chunk_id')
   })
 
   test('materialize 使用 threadId 与 round 生成确定且唯一的 ID', () => {

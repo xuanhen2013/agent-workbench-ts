@@ -2,6 +2,7 @@ import { z } from 'zod/v4'
 
 export enum SkillName {
   QuestionAuthoring = 'question-authoring',
+  KnowledgeRetrieval = 'knowledge-retrieval',
 }
 
 /** 可以进入模型上下文的轻量 Skill 信息。 */

@@ -1,12 +1,14 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph'
 import type { QuizPlanner } from './planning'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
+import type { KnowledgeRetriever } from '@/knowledge/contracts'
 import {
   END,
   interrupt,
   START,
   StateGraph,
 } from '@langchain/langgraph'
+import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
 import {
   InterviewQuizStatus,
   QuizCompletionReason,
@@ -25,6 +27,7 @@ import { InterviewQuizStateSchema } from './state'
 export interface CreateInterviewQuizGraphOptions {
   checkpointer: BaseCheckpointSaver
   planner: Pick<QuizPlanner, 'createRound' | 'materializeRoundPlan'>
+  knowledgeRetriever: Pick<KnowledgeRetriever, 'search'>
 }
 
 function raiseDifficulty(difficulty: QuizDifficulty) {
@@ -63,6 +66,29 @@ function buildRoundMessage(input: {
 }
 
 /**
+ * Query 先由确定性状态拼出来，不额外调用一个 Query Planner 模型。
+ * 这样用户答错的知识点能稳定进入下一轮检索。
+ */
+function buildKnowledgeQuery(state: {
+  roundContext: {
+    difficulty: QuizDifficulty
+    strategy: QuizStrategy
+  } | null
+  rounds: Array<{ result: { wrongKnowledgePoints: string[] } }>
+}) {
+  const wrongKnowledgePoints = state.roundContext?.strategy
+    === QuizStrategy.Remediate
+    ? state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []
+    : []
+  const focus = wrongKnowledgePoints.length > 0
+    ? wrongKnowledgePoints.join(' ')
+    : 'Agent 工程 Tool Calling LangGraph Context Memory'
+  const difficulty = state.roundContext?.difficulty ?? QuizDifficulty.Foundation
+
+  return `${difficulty} ${focus} 核心概念 常见误区`
+}
+
+/**
  * 最小多轮 Quiz Graph：复用 04 的 History、Interrupt 和 Checkpointer，
  * 只新增 Structured Plan、确定性判分与 RePlan 反馈。
  */
@@ -80,7 +106,68 @@ export function createInterviewQuizGraph(
       return {
         roundContext,
         modelHistory: [buildRoundMessage(roundContext)],
+        retrievedChunks: [],
         status: InterviewQuizStatus.Planning,
+      }
+    })
+    .addNode('retrieve_knowledge', async (state, { signal }) => {
+      if (!state.roundContext) {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: {
+            code: 'round_context_missing',
+            message: '当前轮次的规划参数不存在',
+          },
+        }
+      }
+
+      try {
+        const query = buildKnowledgeQuery(state)
+        const [questionSignals, answerEvidence] = await Promise.all([
+          options.knowledgeRetriever.search({
+            query,
+            limit: 4,
+            filter: {
+              evidenceRoles: [KnowledgeEvidenceRole.QuestionSignal],
+            },
+            signal,
+          }),
+          options.knowledgeRetriever.search({
+            query,
+            limit: 8,
+            filter: {
+              evidenceRoles: [KnowledgeEvidenceRole.AnswerEvidence],
+            },
+            signal,
+          }),
+        ])
+        console.log('[retrieve_knowledge] state', state)
+        console.log('[retrieve_knowledge] questionSignals', questionSignals)
+        console.log('[retrieve_knowledge] answerEvidence', answerEvidence)
+
+        if (answerEvidence.length === 0) {
+          return {
+            status: InterviewQuizStatus.Failed,
+            error: {
+              code: 'insufficient_knowledge',
+              message: '当前轮没有可用于证明答案的知识资料',
+            },
+          }
+        }
+
+        return {
+          retrievedChunks: [...questionSignals, ...answerEvidence],
+          status: InterviewQuizStatus.Planning,
+        }
+      }
+      catch {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: {
+            code: 'knowledge_retrieval_failed',
+            message: '检索 Agent 面试资料失败',
+          },
+        }
       }
     })
     .addNode('plan_execute', async (state, { signal }) => {
@@ -100,6 +187,7 @@ export function createInterviewQuizGraph(
         previousQuestionStems: state.rounds.flatMap(record => (
           record.plan.questions.map(question => question.stem)
         )),
+        retrievedChunks: state.retrievedChunks,
       }
 
       try {
@@ -254,6 +342,7 @@ export function createInterviewQuizGraph(
         currentPlan: null,
         submission: null,
         currentModelUsage: null,
+        retrievedChunks: [],
         status: InterviewQuizStatus.Planning,
       }
     })
@@ -262,7 +351,10 @@ export function createInterviewQuizGraph(
       completionReason: QuizCompletionReason.MaxRounds,
     }))
     .addEdge(START, 'initialize')
-    .addEdge('initialize', 'plan_execute')
+    .addEdge('initialize', 'retrieve_knowledge')
+    .addConditionalEdges('retrieve_knowledge', state => (
+      state.status === InterviewQuizStatus.Failed ? END : 'plan_execute'
+    ))
     .addConditionalEdges('plan_execute', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
@@ -284,7 +376,7 @@ export function createInterviewQuizGraph(
     .addConditionalEdges('wait_next_round', state => (
       state.status === InterviewQuizStatus.Failed ? END : 'replan'
     ))
-    .addEdge('replan', 'plan_execute')
+    .addEdge('replan', 'retrieve_knowledge')
     .addEdge('finish', END)
     .compile({ checkpointer: options.checkpointer })
 }

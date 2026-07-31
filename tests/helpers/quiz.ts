@@ -9,6 +9,7 @@ import type {
   QuizPlanResult,
 } from '@/agent/interview-quiz/planning'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
+import type { RetrievedChunk } from '@/knowledge/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import {
   QuestionType,
@@ -17,6 +18,10 @@ import {
 } from '@/agent/interview-quiz/contracts'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
+import {
+  KnowledgeEvidenceRole,
+  KnowledgeSourceType,
+} from '@/knowledge/contracts'
 
 export function createQuizDraft(
   round = 1,
@@ -129,13 +134,54 @@ export class FakeQuizPlanner extends QuizPlanner {
   }
 }
 
+/** Graph 测试只需要一个确定的 Retriever，不需要真的算向量。 */
+export class FakeKnowledgeRetriever {
+  readonly calls: Array<{
+    query: string
+    role: string | undefined
+  }> = []
+
+  async search(input: {
+    query: string
+    limit: number
+    filter?: { evidenceRoles?: string[] }
+    signal: AbortSignal
+  }): Promise<RetrievedChunk[]> {
+    input.signal.throwIfAborted()
+    this.calls.push({
+      query: input.query,
+      role: input.filter?.evidenceRoles?.[0],
+    })
+
+    const role = input.filter?.evidenceRoles?.[0]
+      === KnowledgeEvidenceRole.QuestionSignal
+      ? KnowledgeEvidenceRole.QuestionSignal
+      : KnowledgeEvidenceRole.AnswerEvidence
+
+    return [{
+      chunkId: `fake:${role}`,
+      documentId: 'fake:document',
+      sourceType: KnowledgeSourceType.UserNote,
+      evidenceRole: role,
+      title: 'Fake knowledge',
+      sourceUri: 'fake:knowledge',
+      heading: 'Fake',
+      text: `Fake ${role} for tests.`,
+      ordinal: 0,
+      score: 1,
+    }].slice(0, input.limit)
+  }
+}
+
 export function createQuizGraphFixture() {
   const planner = new FakeQuizPlanner()
+  const knowledgeRetriever = new FakeKnowledgeRetriever()
   const graph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
     planner,
+    knowledgeRetriever,
   })
-  return { graph, planner }
+  return { graph, planner, knowledgeRetriever }
 }
 
 export function correctSubmission(request: QuizRoundRequest) {
@@ -175,6 +221,7 @@ export function materializeTestPlan(input: {
     difficulty: input.difficulty ?? QuizDifficulty.Foundation,
     strategy: QuizStrategy.Initial,
     previousQuestionStems: [],
+    retrievedChunks: [],
   }
 
   return planner.materializeRoundPlan({

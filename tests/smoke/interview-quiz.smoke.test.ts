@@ -1,6 +1,6 @@
 import type { StateSnapshot } from '@langchain/langgraph'
 import process from 'node:process'
-import { Command, MemorySaver } from '@langchain/langgraph'
+import { Command } from '@langchain/langgraph'
 import { expect, test } from 'bun:test'
 import { QuizDifficulty } from '@/agent/interview-quiz/contracts'
 import {
@@ -8,10 +8,7 @@ import {
   QuizRoundRequestSchema,
   QuizRoundResultRequestSchema,
 } from '@/agent/interview-quiz/execution'
-import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
-import { QuizPlanner } from '@/agent/interview-quiz/planning'
-import { createOpenAIModelClient } from '@/clients/openai'
-import { loadSkillCatalog } from '@/skills/skill-loader'
+import { createDefaultAppDeps } from '@/composition-root'
 
 const requiredModelEnvironment = [
   'OPENAI_BASE_URL',
@@ -45,14 +42,7 @@ function findInterrupt<T>(
 
 test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async () => {
   assertSmokeEnvironment()
-  const { client, model } = createOpenAIModelClient(process.env)
-  const skillCatalog = await loadSkillCatalog([
-    new URL('../../skills/question-authoring/', import.meta.url),
-  ])
-  const graph = createInterviewQuizGraph({
-    checkpointer: new MemorySaver(),
-    planner: new QuizPlanner(client, model, { skillCatalog }),
-  })
+  const { interviewQuizGraph: graph } = await createDefaultAppDeps()
   const threadId = `interview-quiz-smoke-${crypto.randomUUID()}`
   const graphConfig = {
     configurable: { thread_id: threadId },
