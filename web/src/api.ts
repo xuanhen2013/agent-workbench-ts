@@ -61,9 +61,14 @@ export type QuizDifficulty = 'foundation' | 'intermediate' | 'advanced'
 export type QuizStrategy = 'initial' | 'advance' | 'remediate'
 export type QuizQuestionType = 'single' | 'multiple'
 
+export type SelectedJdReference
+  = | { source: 'user_upload', documentId: string }
+    | { source: 'market', itemKey: string }
+
 export interface QuizConfig {
   initialDifficulty: QuizDifficulty
   maxRounds: number
+  selectedJd?: SelectedJdReference
 }
 
 export interface QuizOption {
@@ -127,6 +132,40 @@ export interface InterviewQuizView {
   waitingResult?: QuizRoundResultRequest
   results: PublicQuizRoundResult[]
   error?: { code: string, message: string }
+}
+
+export interface ImportedJdView {
+  jdDocumentId: string
+  title: string
+  chunkCount: number
+}
+
+export interface MarketJdCard {
+  itemKey: string
+  title: string
+  company: string
+  location: string
+  salary: string
+  highlights: string[]
+}
+
+export function searchMarketJds(query: string) {
+  const search = new URLSearchParams({ query })
+  return request<{ items: MarketJdCard[] }>(
+    `/api/interview-quiz/market-jds?${search}`,
+  )
+}
+
+export function importInterviewJd(input: {
+  learnerId: string
+  title: string
+  content: string
+}) {
+  return request<ImportedJdView>('/api/interview-quiz/jds', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  })
 }
 
 export function createInterviewQuiz(

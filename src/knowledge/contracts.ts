@@ -5,6 +5,7 @@ export enum KnowledgeSourceType {
   Xiaolin = 'xiaolin',
   Official = 'official',
   UserNote = 'user_note',
+  Jd = 'jd',
 }
 
 /**
@@ -23,6 +24,8 @@ export interface SourceDocument {
   documentId: string
   sourceType: KnowledgeSourceType
   evidenceRole: KnowledgeEvidenceRole
+  /** null 表示公共资料；用户 JD 使用 learnerId。 */
+  ownerId: string | null
   title: string
   sourceUri: string
   content: string
@@ -34,6 +37,8 @@ export interface KnowledgeChunk {
   documentId: string
   sourceType: KnowledgeSourceType
   evidenceRole: KnowledgeEvidenceRole
+  /** 由 SourceDocument 传播；检索前必须按 owner 边界过滤。 */
+  ownerId: string | null
   title: string
   sourceUri: string
   heading: string
@@ -50,6 +55,9 @@ export interface RetrievedChunk extends KnowledgeChunk {
 export interface KnowledgeFilter {
   sourceTypes?: KnowledgeSourceType[]
   evidenceRoles?: KnowledgeEvidenceRole[]
+  documentIds?: string[]
+  /** undefined 表示不限制；null 表示只读取公共资料。 */
+  ownerId?: string | null
 }
 
 /** 文本转向量的边界。未来可以换成真实 Embedding Provider。 */
@@ -78,14 +86,31 @@ export interface KnowledgeStore {
     filter?: KnowledgeFilter
     signal: AbortSignal
   }) => Promise<RetrievedChunk[]>
+
+  /** 精确列出文档 Chunk；不能用向量 Top-K 代替。 */
+  list: (input: {
+    filter: KnowledgeFilter
+    signal: AbortSignal
+  }) => Promise<KnowledgeChunk[]>
 }
 
-/** Graph 只依赖这个接口，不关心底层是 Map、CF 还是 Qdrant。 */
-export interface KnowledgeRetriever {
+/** Graph/Tool 的通用语义检索边界。 */
+export interface KnowledgeSearchRetriever {
   search: (input: {
     query: string
     limit: number
     filter?: KnowledgeFilter
     signal: AbortSignal
   }) => Promise<RetrievedChunk[]>
+}
+
+/** 本地可枚举 Store 额外支持按 owner 精确加载文档。 */
+export interface KnowledgeRetriever extends KnowledgeSearchRetriever {
+  /** 按 documentId + ownerId 精确加载一份用户文档。 */
+  loadDocument: (input: {
+    documentId: string
+    ownerId: string
+    sourceType: KnowledgeSourceType
+    signal: AbortSignal
+  }) => Promise<KnowledgeChunk[]>
 }

@@ -5,7 +5,10 @@ sourceUrls:
   - https://developers.cloudflare.com/ai-search/concepts/how-ai-search-works/
   - https://developers.cloudflare.com/ai-search/api/items/rest-api/
   - https://developers.cloudflare.com/ai-search/api/search/rest-api/
-verifiedAt: 2026-08-01
+  - https://developers.cloudflare.com/ai-search/configuration/indexing/metadata/
+  - https://developers.cloudflare.com/ai-search/configuration/retrieval/filtering/
+  - https://developers.cloudflare.com/ai-search/api/items/workers-binding/#upload-with-metadata
+verifiedAt: 2026-08-02
 ---
 
 # Cloudflare AI Search 最小事实集
@@ -21,6 +24,13 @@ verifiedAt: 2026-08-01
 - Search 结果的 `result.chunks` 包含 Chunk 的 `id`、`text`、`score` 和来源 `item` 等信息。
 - `ai_search_options.retrieval.max_num_results` 可限制返回 Chunk 数量。
 - Items API 通过 `POST /accounts/{account_id}/ai-search/instances/{id}/items` 上传文件，multipart 字段名为 `file`。
+- Built-in storage 上传时，带路径前缀的 Item Key 会形成内置 `filename` 和 `folder` metadata；例如 `official/openai/guide.md` 的 folder 是 `official/openai/`。
+- AI Search 还内置 `timestamp` metadata；`filename`、`folder`、`timestamp` 是保留字段，不能重复声明为自定义字段。
+- 每个实例最多声明 5 个自定义 metadata 字段；字段需要先写入实例的 `custom_metadata` schema，修改 schema 会触发全量重新索引。
+- 上传文件可附带自定义 metadata。REST multipart 中 `metadata` 是 JSON 字符串；Workers Binding 则使用 `options.metadata` 对象。
+- Search 请求可在 `ai_search_options.retrieval.filters` 中按内置或自定义 metadata 进行检索前过滤。
+- Filter 支持隐式相等以及 `$eq`、`$ne`、`$in`、`$nin`、`$lt`、`$lte`、`$gt`、`$gte`；多个字段之间是隐式 AND。
+- Folder 的相等过滤只命中该层目录。查询目录及其子目录时，可用 `$gte: "prefix/"` 与 `$lt: "prefix0"` 表示前缀范围。
 - Items API 可列出条目；状态可能是 `queued`、`running`、`completed`、`error`、`skipped` 或 `outdated`。
 - 上传请求成功只代表文件已接收，不代表索引完成或已经能够被搜索。
 - REST 请求需要 API Token；现行文档要求 Token 同时具备 `AI Search:Edit` 与 `AI Search:Run` 权限。
@@ -29,10 +39,14 @@ verifiedAt: 2026-08-01
 
 - AI Search 可以代管 Chunking、Embedding 和 Index，但资料可信度分级仍由应用负责。
 - 相似度高不等于事实一定正确；当前项目只把经过核验并上传到指定实例的官方资料视为 `answer_evidence`。
-- 文件 frontmatter 只提供追溯信息，不会自动授予资料可信角色；证据角色由受信任的 Adapter 配置决定。
+- 文件 frontmatter 只提供追溯信息，不会自动授予资料可信角色；`evidence_role` 和 `source_type` 由受信任的上传器固定写入，并由 Retriever 固定提交过滤条件。
+- 不能让模型自行提交或修改 `evidence_role`、`source_type`、Folder 或返回数量，否则模型可能跨越答案证据与出题信号的信任边界。
 
 ## 来源章节
 
 - How AI Search works / How indexing works / How querying works
 - Items REST API / Items / Upload / List
 - Search REST API / Search and chat / Search
+- Metadata attributes / Built-in and custom metadata
+- Filtering / Operators and folder prefix filtering
+- Items Workers binding / Upload with metadata

@@ -15,7 +15,7 @@ function config(fetch: FetchLike) {
   return {
     searchUrl: 'https://search.example.test/search',
     apiToken: 'test-token',
-    sourceType: KnowledgeSourceType.Official,
+    sourceTypes: [KnowledgeSourceType.Official],
     evidenceRole: KnowledgeEvidenceRole.AnswerEvidence,
     fetch,
   }
@@ -41,7 +41,11 @@ describe('CloudflareAiSearchRetriever', () => {
             text: 'StateGraph 的 Node 返回局部状态更新。',
             item: {
               key: 'official/langgraph.md',
-              metadata: { heading: 'StateGraph' },
+              metadata: {
+                heading: 'StateGraph',
+                evidence_role: 'answer_evidence',
+                source_type: 'official',
+              },
             },
           }],
         },
@@ -62,7 +66,13 @@ describe('CloudflareAiSearchRetriever', () => {
     expect(JSON.parse(String(requestInit?.body))).toEqual({
       messages: [{ role: 'user', content: 'StateGraph Node' }],
       ai_search_options: {
-        retrieval: { max_num_results: 3 },
+        retrieval: {
+          max_num_results: 3,
+          filters: {
+            evidence_role: 'answer_evidence',
+            source_type: 'official',
+          },
+        },
       },
     })
     expect(result).toEqual([{
@@ -70,6 +80,7 @@ describe('CloudflareAiSearchRetriever', () => {
       documentId: 'official/langgraph.md',
       sourceType: KnowledgeSourceType.Official,
       evidenceRole: KnowledgeEvidenceRole.AnswerEvidence,
+      ownerId: null,
       title: 'official/langgraph.md',
       sourceUri: 'cloudflare-ai-search:official/langgraph.md',
       heading: 'StateGraph',
@@ -144,7 +155,7 @@ describe('CloudflareAiSearchRetriever', () => {
       CLOUDFLARE_ACCOUNT_ID: 'account/id',
       CLOUDFLARE_AI_SEARCH_INSTANCE: 'agent search',
       CLOUDFLARE_API_TOKEN: 'token',
-    }, fetch)
+    }, { request: fetch })
     if (!retriever)
       throw new Error('Expected Cloudflare retriever.')
 
@@ -157,5 +168,77 @@ describe('CloudflareAiSearchRetriever', () => {
     expect(requestUrl).toBe(
       'https://api.cloudflare.com/client/v4/accounts/account%2Fid/ai-search/instances/agent%20search/search',
     )
+  })
+
+  test('question_signal Retriever 用服务端固定的多来源 Filter', async () => {
+    let requestInit: RequestInit | undefined
+    const fetch: FetchLike = async (_input, init) => {
+      requestInit = init
+      return Response.json({ success: true, result: { chunks: [] } })
+    }
+    const retriever = new CloudflareAiSearchRetriever({
+      searchUrl: 'https://search.example.test/search',
+      sourceTypes: [
+        KnowledgeSourceType.Jd,
+        KnowledgeSourceType.InterviewBank,
+      ],
+      evidenceRole: KnowledgeEvidenceRole.QuestionSignal,
+      fetch,
+    })
+
+    await retriever.search({
+      query: 'Agent 工程岗位常见要求',
+      limit: 5,
+      filter: { evidenceRoles: [KnowledgeEvidenceRole.QuestionSignal] },
+      signal: signal(),
+    })
+
+    expect(JSON.parse(String(requestInit?.body))).toMatchObject({
+      ai_search_options: {
+        retrieval: {
+          filters: {
+            evidence_role: 'question_signal',
+            source_type: { $in: ['jd', 'interview_bank'] },
+          },
+        },
+      },
+    })
+  })
+
+  test('受信任 documentIds 会转换为 Cloudflare filename 精确 Filter', async () => {
+    let requestInit: RequestInit | undefined
+    const fetch: FetchLike = async (_input, init) => {
+      requestInit = init
+      return Response.json({ success: true, result: { chunks: [] } })
+    }
+    const retriever = new CloudflareAiSearchRetriever({
+      searchUrl: 'https://search.example.test/search',
+      sourceTypes: [KnowledgeSourceType.Jd],
+      evidenceRole: KnowledgeEvidenceRole.QuestionSignal,
+      fetch,
+    })
+
+    await retriever.search({
+      query: '岗位职责 任职要求',
+      limit: 10,
+      filter: {
+        documentIds: [
+          'question-signal/jd-market/jd-market-abc123.md',
+        ],
+      },
+      signal: signal(),
+    })
+
+    expect(JSON.parse(String(requestInit?.body))).toMatchObject({
+      ai_search_options: {
+        retrieval: {
+          filters: {
+            evidence_role: 'question_signal',
+            source_type: 'jd',
+            filename: 'jd-market-abc123.md',
+          },
+        },
+      },
+    })
   })
 })

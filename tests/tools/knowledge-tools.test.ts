@@ -21,6 +21,7 @@ function chunk(
     documentId: 'document:test',
     sourceType: KnowledgeSourceType.UserNote,
     evidenceRole,
+    ownerId: null,
     title: 'Test knowledge',
     sourceUri: 'fixture:test',
     heading: 'Test',

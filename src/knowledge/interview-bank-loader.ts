@@ -44,6 +44,7 @@ export async function loadInterviewBankDocuments(
       documentId: `interview-bank:${relativePath}:${contentHash}`,
       sourceType: KnowledgeSourceType.InterviewBank,
       evidenceRole: KnowledgeEvidenceRole.QuestionSignal,
+      ownerId: null,
       title: markdownTitle || basename(filename, '.md'),
       sourceUri: `local:interview-bank/${relativePath}`,
       content,

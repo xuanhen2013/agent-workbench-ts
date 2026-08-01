@@ -8,6 +8,8 @@ import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
 import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
 import { createOpenAIResponsesExecutor } from '@/clients/openai'
+import { importJdDocument } from '@/jd/import-jd'
+import { RetrievedMarketJdCatalog } from '@/jd/market-jd-catalog'
 import { createCloudflareAiSearchRetrieverFromEnv } from '@/knowledge/cloudflare-ai-search'
 import {
   KnowledgeEvidenceRole,
@@ -40,6 +42,7 @@ export async function createDefaultAppDeps(): Promise<AppDeps> {
     documentId: 'fixture:verified-agent-basics',
     sourceType: KnowledgeSourceType.UserNote,
     evidenceRole: KnowledgeEvidenceRole.AnswerEvidence,
+    ownerId: null,
     title: '已核验 Agent 工程基础摘录',
     sourceUri: 'fixture:verified-agent-basics',
     content: `
@@ -86,8 +89,28 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
     knowledgeStore,
   )
   const cloudflareAnswerEvidenceRetriever
-    = createCloudflareAiSearchRetrieverFromEnv(process.env)
-  const questionSignalRetriever = knowledgeRetriever
+    = createCloudflareAiSearchRetrieverFromEnv(process.env, {
+      sourceTypes: [KnowledgeSourceType.Official],
+      evidenceRole: KnowledgeEvidenceRole.AnswerEvidence,
+    })
+  const cloudflareQuestionSignalRetriever
+    = createCloudflareAiSearchRetrieverFromEnv(process.env, {
+      sourceTypes: [
+        KnowledgeSourceType.Jd,
+        KnowledgeSourceType.InterviewBank,
+      ],
+      evidenceRole: KnowledgeEvidenceRole.QuestionSignal,
+    })
+  const cloudflareMarketJdRetriever
+    = createCloudflareAiSearchRetrieverFromEnv(process.env, {
+      sourceTypes: [KnowledgeSourceType.Jd],
+      evidenceRole: KnowledgeEvidenceRole.QuestionSignal,
+    })
+  const marketJdCatalog = cloudflareMarketJdRetriever
+    ? new RetrievedMarketJdCatalog(cloudflareMarketJdRetriever)
+    : undefined
+  const questionSignalRetriever
+    = cloudflareQuestionSignalRetriever ?? knowledgeRetriever
   const answerEvidenceRetriever
     = cloudflareAnswerEvidenceRetriever ?? knowledgeRetriever
   const cloudflareQuestionBank
@@ -115,11 +138,22 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
       skillCatalog,
       questionSignalRetriever,
       answerEvidenceRetriever,
+      marketJdCatalog,
     }),
     questionSignalRetriever,
+    jdRetriever: knowledgeRetriever,
+    marketJdCatalog,
     questionBank,
     learningMemory,
   })
 
-  return { interviewQuizGraph, jokeGraph }
+  return {
+    interviewQuizGraph,
+    jokeGraph,
+    importJdDocument: (input, options) => importJdDocument(input, {
+      embedder: embeddingModel,
+      store: knowledgeStore,
+    }, options),
+    marketJdCatalog,
+  }
 }

@@ -7,6 +7,7 @@ import type { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-
 import type { InterviewQuizState } from '@/agent/interview-quiz/state'
 import type { AppEnv } from '@/http'
 import type { HttpStatusCode } from '@/http/errors'
+import type { ImportJdDocument, MarketJdCatalog } from '@/jd/contracts'
 import { Command } from '@langchain/langgraph'
 import {
   CreateInterviewQuizBodySchema,
@@ -26,6 +27,10 @@ import {
   HttpErrorCode,
   HttpStatus,
 } from '@/http/errors'
+import {
+  ImportJdBodySchema,
+  SearchMarketJdsQuerySchema,
+} from '@/jd/contracts'
 
 export type InterviewQuizGraph = ReturnType<typeof createInterviewQuizGraph>
 
@@ -176,7 +181,84 @@ async function projectInterviewQuiz(
 export function registerInterviewQuizRoutes(
   app: Hono<AppEnv>,
   graph: InterviewQuizGraph,
+  importJd: ImportJdDocument,
+  marketJdCatalog?: Pick<MarketJdCatalog, 'search'>,
 ) {
+  app.post('/api/interview-quiz/jds', async (c) => {
+    const json = await readJson(c)
+    if (!json.ok)
+      return errorResponse(c, HttpStatus.BadRequest, json.error)
+
+    const body = ImportJdBodySchema.safeParse(json.value)
+    if (!body.success) {
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidJdInput),
+      )
+    }
+
+    try {
+      const imported = await importJd(body.data, {
+        signal: c.req.raw.signal,
+      })
+      return c.json(imported, 201)
+    }
+    catch {
+      return errorResponse(
+        c,
+        HttpStatus.InternalServerError,
+        createHttpError(HttpErrorCode.JdImportFailed),
+      )
+    }
+  })
+
+  app.get('/api/interview-quiz/market-jds', async (c) => {
+    const query = SearchMarketJdsQuerySchema.safeParse({
+      query: c.req.query('query'),
+    })
+    if (!query.success) {
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidMarketJdQuery),
+      )
+    }
+
+    if (!marketJdCatalog) {
+      return errorResponse(
+        c,
+        HttpStatus.ServiceUnavailable,
+        createHttpError(HttpErrorCode.MarketJdSearchUnavailable),
+      )
+    }
+
+    try {
+      const results = await marketJdCatalog.search({
+        query: query.data.query,
+        limit: 5,
+        signal: c.req.raw.signal,
+      })
+      return c.json({
+        items: results.map(result => ({
+          itemKey: result.itemKey,
+          title: result.title,
+          company: result.company,
+          location: result.location,
+          salary: result.salary,
+          highlights: result.highlights,
+        })),
+      })
+    }
+    catch {
+      return errorResponse(
+        c,
+        HttpStatus.InternalServerError,
+        createHttpError(HttpErrorCode.MarketJdSearchFailed),
+      )
+    }
+  })
+
   app.post('/api/interview-quiz', async (c) => {
     const json = await readJson(c)
     if (!json.ok)

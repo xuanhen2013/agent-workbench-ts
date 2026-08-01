@@ -11,7 +11,12 @@ import type {
   OpenAIResponseInputItem,
   OpenAIResponsesExecutor,
 } from '@/clients/openai'
-import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
+import type { ImportJdDocument } from '@/jd/contracts'
+import type {
+  KnowledgeChunk,
+  KnowledgeRetriever,
+  RetrievedChunk,
+} from '@/knowledge/contracts'
 import type {
   LearningMemory,
   LearningMemoryContext,
@@ -32,6 +37,19 @@ import {
 import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 
 export const TEST_LEARNER_ID = '00000000-0000-4000-8000-000000000001'
+
+/** 与 JD 无关的 HTTP 测试使用；06E 测试会传入真实 InMemory Importer。 */
+export const fakeImportJdDocument: ImportJdDocument = async (
+  input,
+  options,
+) => {
+  options.signal.throwIfAborted()
+  return {
+    jdDocumentId: `jd:${input.learnerId}:fake`,
+    title: input.title,
+    chunkCount: 1,
+  }
+}
 
 export function createQuizDraft(
   round = 1,
@@ -120,6 +138,7 @@ function fakeKnowledgeChunk(
     documentId: 'fake:document',
     sourceType: KnowledgeSourceType.UserNote,
     evidenceRole,
+    ownerId: null,
     title: 'Fake knowledge',
     sourceUri: 'fake:knowledge',
     heading: 'Fake',
@@ -184,6 +203,8 @@ export class FakeKnowledgeRetriever {
     role: string | undefined
   }> = []
 
+  readonly jdDocuments: KnowledgeChunk[] = []
+
   async search(input: {
     query: string
     limit: number
@@ -202,6 +223,22 @@ export class FakeKnowledgeRetriever {
       : KnowledgeEvidenceRole.AnswerEvidence
 
     return [fakeKnowledgeChunk(role)].slice(0, input.limit)
+  }
+
+  async loadDocument(input: {
+    documentId: string
+    ownerId: string
+    sourceType: string
+    signal: AbortSignal
+  }): Promise<KnowledgeChunk[]> {
+    input.signal.throwIfAborted()
+    return this.jdDocuments
+      .filter(chunk => (
+        chunk.documentId === input.documentId
+        && chunk.ownerId === input.ownerId
+        && chunk.sourceType === input.sourceType
+      ))
+      .map(chunk => ({ ...chunk }))
   }
 }
 
@@ -250,6 +287,7 @@ export function createQuizGraphFixture(options: {
     checkpointer: options.checkpointer ?? new MemorySaver(),
     planner,
     questionSignalRetriever: knowledgeRetriever,
+    jdRetriever: knowledgeRetriever,
     questionBank,
     learningMemory,
   })
@@ -301,6 +339,7 @@ export function materializeTestPlan(input: {
     previousQuestionStems: [],
     retrievedChunks: [],
     memoryContext: { weakKnowledgePoints: [] },
+    jdContext: null,
   }
 
   return planner.materializeRoundPlan({

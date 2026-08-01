@@ -1,4 +1,5 @@
 import type { AppEnv } from '@/http'
+import type { ImportJdDocument, MarketJdCatalog } from '@/jd/contracts'
 import type { InterviewQuizGraph } from '@/routes/interview-quiz'
 import type { JokeGraph } from '@/routes/jokes'
 import { Hono } from 'hono'
@@ -15,6 +16,8 @@ import { registerJokeRoutes } from '@/routes/jokes'
 export interface AppDeps {
   interviewQuizGraph: InterviewQuizGraph
   jokeGraph: JokeGraph
+  importJdDocument: ImportJdDocument
+  marketJdCatalog?: MarketJdCatalog
 }
 
 export function createApp(deps: AppDeps) {
@@ -49,7 +52,12 @@ export function createApp(deps: AppDeps) {
   })
 
   registerJokeRoutes(app, deps.jokeGraph)
-  registerInterviewQuizRoutes(app, deps.interviewQuizGraph)
+  registerInterviewQuizRoutes(
+    app,
+    deps.interviewQuizGraph,
+    deps.importJdDocument,
+    deps.marketJdCatalog,
+  )
 
   app.notFound((c) => {
     return c.json({

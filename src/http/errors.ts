@@ -17,6 +17,11 @@ export enum HttpErrorCode {
   ReviewIdMismatch = 'review_id_mismatch',
   InvalidNextRoundDecision = 'invalid_next_round_decision',
   ThreadNotWaitingForNextRound = 'thread_not_waiting_for_next_round',
+  InvalidJdInput = 'jd_input_invalid',
+  JdImportFailed = 'jd_import_failed',
+  InvalidMarketJdQuery = 'market_jd_query_invalid',
+  MarketJdSearchUnavailable = 'market_jd_search_unavailable',
+  MarketJdSearchFailed = 'market_jd_search_failed',
 }
 
 export const HttpErrorMessages = {
@@ -37,6 +42,11 @@ export const HttpErrorMessages = {
   [HttpErrorCode.ReviewIdMismatch]: 'The reviewId does not match the pending review.',
   [HttpErrorCode.InvalidNextRoundDecision]: 'A valid result reviewId is required.',
   [HttpErrorCode.ThreadNotWaitingForNextRound]: 'The quiz thread is not waiting for the next round.',
+  [HttpErrorCode.InvalidJdInput]: 'learnerId, JD title or JD content is invalid.',
+  [HttpErrorCode.JdImportFailed]: 'The JD could not be imported.',
+  [HttpErrorCode.InvalidMarketJdQuery]: 'The market JD search query is invalid.',
+  [HttpErrorCode.MarketJdSearchUnavailable]: 'Market JD search is not configured.',
+  [HttpErrorCode.MarketJdSearchFailed]: 'Market JD search failed.',
 } satisfies Record<HttpErrorCode, string>
 
 export const HttpStatus = {
@@ -44,6 +54,7 @@ export const HttpStatus = {
   NotFound: 404,
   Conflict: 409,
   InternalServerError: 500,
+  ServiceUnavailable: 503,
 } as const
 
 export type HttpStatusCode = typeof HttpStatus[keyof typeof HttpStatus]

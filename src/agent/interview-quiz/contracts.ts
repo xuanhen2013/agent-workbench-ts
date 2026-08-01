@@ -1,4 +1,5 @@
 import { z } from 'zod/v4'
+import { SelectedJdReferenceSchema } from '@/jd/contracts'
 
 export enum QuizDifficulty {
   Foundation = 'foundation',
@@ -34,6 +35,8 @@ export enum QuizCompletionReason {
 export const QuizConfigSchema = z.object({
   initialDifficulty: z.enum(QuizDifficulty),
   maxRounds: z.number().int().min(1).max(3),
+  /** 不传时完整退化为不带 JD 的 06D 流程。 */
+  selectedJd: SelectedJdReferenceSchema.optional(),
 }).strict()
 
 /** 创建新 Thread 的 HTTP Body；learnerId 是跨 Session 的 Demo 身份。 */

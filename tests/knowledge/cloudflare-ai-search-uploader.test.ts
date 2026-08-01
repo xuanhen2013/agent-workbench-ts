@@ -2,6 +2,7 @@ import type { FetchLike } from '@/knowledge/cloudflare-ai-search'
 import { describe, expect, test } from 'bun:test'
 import {
   CloudflareAiSearchItemStatus,
+  CloudflareAiSearchMetadataType,
   CloudflareAiSearchUploader,
   CloudflareAiSearchUploadError,
   CloudflareAiSearchUploadErrorCode,
@@ -10,6 +11,7 @@ import {
 
 function uploader(fetch: FetchLike) {
   return new CloudflareAiSearchUploader({
+    instanceUrl: 'https://api.example.test/instance',
     itemsUrl: 'https://api.example.test/items',
     apiToken: 'secret-token',
     fetch,
@@ -17,7 +19,7 @@ function uploader(fetch: FetchLike) {
 }
 
 describe('CloudflareAiSearchUploader', () => {
-  test('以 file multipart 字段上传文件，并返回索引状态', async () => {
+  test('以带 folder 的 key 上传文件，并附带 JSON metadata', async () => {
     let requestInit: RequestInit | undefined
     const fetch: FetchLike = async (_input, init) => {
       requestInit = init
@@ -34,8 +36,12 @@ describe('CloudflareAiSearchUploader', () => {
     }
 
     const result = await uploader(fetch).upload({
-      filename: 'openai-function-calling.md',
+      key: 'official/openai/openai-function-calling.md',
       file: new Blob(['verified content'], { type: 'text/markdown' }),
+      metadata: {
+        evidence_role: 'answer_evidence',
+        source_type: 'official',
+      },
     })
 
     expect(requestInit?.method).toBe('POST')
@@ -46,13 +52,68 @@ describe('CloudflareAiSearchUploader', () => {
 
     const file = (requestInit?.body as FormData).get('file')
     expect(file).toBeInstanceOf(File)
-    expect((file as File).name).toBe('openai-function-calling.md')
+    expect((file as File).name)
+      .toBe('official/openai/openai-function-calling.md')
     expect(await (file as File).text()).toBe('verified content')
+    expect((requestInit?.body as FormData).get('metadata')).toBe(JSON.stringify({
+      evidence_role: 'answer_evidence',
+      source_type: 'official',
+    }))
     expect(result).toEqual({
       id: 'item-1',
       key: 'openai-function-calling.md',
       status: CloudflareAiSearchItemStatus.Queued,
       chunksCount: 0,
+      metadata: {},
+    })
+  })
+
+  test('合并已有字段并只 PUT custom_metadata', async () => {
+    const requests: Array<{ url: string, init?: RequestInit }> = []
+    const fetch: FetchLike = async (input, init) => {
+      requests.push({ url: String(input), init })
+      if (init?.method === 'PUT') {
+        return Response.json({
+          success: true,
+          result: {
+            custom_metadata: [
+              { field_name: 'language', data_type: 'text' },
+              { field_name: 'evidence_role', data_type: 'text' },
+              { field_name: 'source_type', data_type: 'text' },
+            ],
+          },
+        })
+      }
+
+      return Response.json({
+        success: true,
+        result: {
+          custom_metadata: [{ field_name: 'language', data_type: 'text' }],
+        },
+      })
+    }
+
+    const result = await uploader(fetch).ensureMetadataSchema([
+      {
+        fieldName: 'evidence_role',
+        dataType: CloudflareAiSearchMetadataType.Text,
+      },
+      {
+        fieldName: 'source_type',
+        dataType: CloudflareAiSearchMetadataType.Text,
+      },
+    ])
+
+    expect(result.changed).toBe(true)
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.url).toBe('https://api.example.test/instance')
+    expect(requests[1]?.init?.method).toBe('PUT')
+    expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
+      custom_metadata: [
+        { field_name: 'language', data_type: 'text' },
+        { field_name: 'evidence_role', data_type: 'text' },
+        { field_name: 'source_type', data_type: 'text' },
+      ],
     })
   })
 
@@ -79,6 +140,7 @@ describe('CloudflareAiSearchUploader', () => {
     expect(result[0]).toMatchObject({
       status: CloudflareAiSearchItemStatus.Completed,
       chunksCount: 3,
+      metadata: {},
     })
   })
 

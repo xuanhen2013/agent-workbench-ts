@@ -1,7 +1,9 @@
 import type {
   InterviewQuizView,
+  MarketJdCard,
   PublicQuizRoundResult,
   QuizDifficulty,
+  SelectedJdReference,
 } from './api'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
@@ -9,6 +11,8 @@ import {
   continueInterviewQuiz,
   createInterviewQuiz,
   getInterviewQuiz,
+  importInterviewJd,
+  searchMarketJds,
   submitInterviewQuizAnswers,
 } from './api'
 
@@ -108,6 +112,16 @@ export function InterviewQuizDemo() {
   const [view, setView] = useState<InterviewQuizView>()
   const [difficulty, setDifficulty] = useState<QuizDifficulty>('foundation')
   const [maxRounds, setMaxRounds] = useState(3)
+  const [jdTitle, setJdTitle] = useState('')
+  const [jdContent, setJdContent] = useState('')
+  const [marketQuery, setMarketQuery] = useState('Agent 前端')
+  const [marketJds, setMarketJds] = useState<MarketJdCard[]>([])
+  const [selectedJd, setSelectedJd] = useState<SelectedJdReference>()
+  const [importedJd, setImportedJd] = useState<{
+    jdDocumentId: string
+    title: string
+    chunkCount: number
+  }>()
   const [answers, setAnswers] = useState<Record<string, string[]>>({})
   const [showSummary, setShowSummary] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -143,12 +157,57 @@ export function InterviewQuizDemo() {
         learnerId: getDemoLearnerId(),
         initialDifficulty: difficulty,
         maxRounds,
+        ...(selectedJd ? { selectedJd } : {}),
       })
       setView(created)
       await navigate({
         replace: true,
         search: { threadId: created.threadId },
       })
+    }
+    catch (error) {
+      setError(errorMessage(error))
+    }
+    finally {
+      setLoading(false)
+    }
+  }
+
+  async function importJd() {
+    if (!jdTitle.trim() || !jdContent.trim())
+      return
+
+    setLoading(true)
+    setError(undefined)
+    try {
+      const imported = await importInterviewJd({
+        learnerId: getDemoLearnerId(),
+        title: jdTitle,
+        content: jdContent,
+      })
+      setImportedJd(imported)
+      setSelectedJd({
+        source: 'user_upload',
+        documentId: imported.jdDocumentId,
+      })
+    }
+    catch (error) {
+      setError(errorMessage(error))
+    }
+    finally {
+      setLoading(false)
+    }
+  }
+
+  async function searchMarket() {
+    if (!marketQuery.trim())
+      return
+
+    setLoading(true)
+    setError(undefined)
+    try {
+      const response = await searchMarketJds(marketQuery)
+      setMarketJds(response.items)
     }
     catch (error) {
       setError(errorMessage(error))
@@ -228,6 +287,12 @@ export function InterviewQuizDemo() {
     setAnswers({})
     setShowSummary(false)
     setError(undefined)
+    setJdTitle('')
+    setJdContent('')
+    setMarketQuery('Agent 前端')
+    setMarketJds([])
+    setSelectedJd(undefined)
+    setImportedJd(undefined)
     await navigate({ replace: true, search: {} })
   }
 
@@ -236,7 +301,7 @@ export function InterviewQuizDemo() {
   return (
     <main className="shell quiz-shell">
       <header className="hero">
-        <p className="eyebrow">AGENT WORKBENCH · CHAPTER 05</p>
+        <p className="eyebrow">AGENT WORKBENCH · CHAPTER 06E</p>
         <h1>Agent Interview Quiz</h1>
         <p className="lead">
           Structured Planner 生成题目，TypeScript 判分，RePlan 根据你的薄弱点继续下一轮。
@@ -250,6 +315,93 @@ export function InterviewQuizDemo() {
             <h2>开始 Agent 工程面试训练</h2>
             <p>每轮固定五题，包含单选和多选。</p>
           </div>
+          <div className="market-jd-picker">
+            <label className="quiz-jd-field">
+              搜索市场 JD
+              <div className="market-jd-search-row">
+                <input
+                  value={marketQuery}
+                  placeholder="例如：Agent 前端"
+                  onChange={event => setMarketQuery(event.target.value)}
+                />
+                <button
+                  className="secondary"
+                  disabled={loading || marketQuery.trim().length < 2}
+                  onClick={searchMarket}
+                >
+                  搜索 5 个岗位
+                </button>
+              </div>
+            </label>
+            {marketJds.length > 0 && (
+              <div className="market-jd-list">
+                {marketJds.map(jd => (
+                  <button
+                    className={`market-jd-card ${selectedJd?.source === 'market' && selectedJd.itemKey === jd.itemKey ? 'selected' : ''}`}
+                    key={jd.itemKey}
+                    type="button"
+                    onClick={() => {
+                      setSelectedJd({ source: 'market', itemKey: jd.itemKey })
+                    }}
+                  >
+                    <strong>{jd.title}</strong>
+                    <span>{jd.company}</span>
+                    <small>{`${jd.location} · ${jd.salary}`}</small>
+                    {jd.highlights.length > 0 && (
+                      <span className="market-jd-highlights">
+                        {jd.highlights.join(' · ')}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <p className="quiz-config-divider">或者粘贴自己的 JD</p>
+          <label className="quiz-jd-field">
+            JD 标题
+            <input
+              value={jdTitle}
+              placeholder="例如：Agent 前端工程师"
+              onChange={(event) => {
+                setJdTitle(event.target.value)
+                setImportedJd(undefined)
+                if (selectedJd?.source === 'user_upload')
+                  setSelectedJd(undefined)
+              }}
+            />
+          </label>
+          <label className="quiz-jd-field">
+            JD 内容
+            <textarea
+              value={jdContent}
+              placeholder="粘贴岗位职责和任职要求，导入后只提取 Agent 相关重点。"
+              rows={6}
+              onChange={(event) => {
+                setJdContent(event.target.value)
+                setImportedJd(undefined)
+                if (selectedJd?.source === 'user_upload')
+                  setSelectedJd(undefined)
+              }}
+            />
+          </label>
+          {importedJd && (
+            <p className="notice jd-imported">
+              已导入：
+              {importedJd.title}
+              （
+              {importedJd.chunkCount}
+              {' '}
+              个资料片段）
+            </p>
+          )}
+          <button
+            className="secondary"
+            disabled={loading || !jdTitle.trim() || !jdContent.trim()}
+            onClick={importJd}
+          >
+            导入 JD
+          </button>
           <label>
             初始难度
             <select
@@ -272,7 +424,18 @@ export function InterviewQuizDemo() {
               <option value={3}>3 轮</option>
             </select>
           </label>
-          <button disabled={loading} onClick={start}>开始答题</button>
+          <button disabled={loading} onClick={start}>
+            {selectedJd ? '使用已选 JD 开始答题' : '不带 JD 开始答题'}
+          </button>
+          {selectedJd && (
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setSelectedJd(undefined)}
+            >
+              取消 JD，按通用 Agent 方向出题
+            </button>
+          )}
         </section>
       )}
 

@@ -5,6 +5,7 @@ import { createJokeGraphFixture } from '../helpers/joke'
 import {
   correctSubmission,
   createQuizGraphFixture,
+  fakeImportJdDocument,
   TEST_LEARNER_ID,
   wrongSubmission,
 } from '../helpers/quiz'
@@ -15,6 +16,7 @@ function createFixture() {
     app: createApp({
       interviewQuizGraph: quiz.graph,
       jokeGraph: createJokeGraphFixture().graph,
+      importJdDocument: fakeImportJdDocument,
     }),
     planner: quiz.planner,
   }

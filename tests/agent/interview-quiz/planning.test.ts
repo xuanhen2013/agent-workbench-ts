@@ -19,16 +19,19 @@ import {
   MAX_FORBIDDEN_QUESTION_STEMS,
   MAX_PLANNER_TOOL_ROUNDS,
   MAX_QUESTION_SIGNAL_SEARCHES,
+  MAX_SIMILAR_JD_SEARCHES,
   QuizPlanner,
   renderForbiddenQuestionStems,
   renderLearningMemory,
 } from '@/agent/interview-quiz/planning'
 import { OpenAIResponsesExecutor } from '@/clients/openai'
+import { SelectedJdSource } from '@/jd/contracts'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
 import { SkillName } from '@/skills/contracts'
+import { JdToolName } from '@/tools/jd'
 import { KnowledgeToolName } from '@/tools/knowledge'
 import { SkillToolName } from '@/tools/skill'
 import { createQuizDraft as createRawQuizDraft } from '../../helpers/quiz'
@@ -63,6 +66,7 @@ function knowledgeChunk(
     documentId: 'document:knowledge',
     sourceType: KnowledgeSourceType.UserNote,
     evidenceRole,
+    ownerId: null,
     title: 'Knowledge',
     sourceUri: 'fixture:knowledge',
     heading: 'Knowledge',
@@ -239,6 +243,16 @@ function searchAnswerEvidenceResponse(
   }])
 }
 
+function searchSimilarJdsResponse(
+  callId = 'search-similar-jds-call',
+) {
+  return functionCallResponse([{
+    callId,
+    name: JdToolName.SearchSimilarJds,
+    arguments: { query: 'Agent 前端共同要求' },
+  }])
+}
+
 function skillTrace(outputText: string): OpenAIResponse[] {
   return [
     loadSkillResponse(),
@@ -297,6 +311,7 @@ function validPlannerInput(): QuizPlannerInput {
     previousQuestionStems: [],
     retrievedChunks: [],
     memoryContext: { weakKnowledgePoints: [] },
+    jdContext: null,
   }
 }
 
@@ -457,7 +472,7 @@ describe('QuizPlanner', () => {
       reasoning: { effort: 'medium' },
       store: false,
     })
-    expect(AGENT_QUIZ_PROMPT_CACHE_KEY).toBe('agent-interview-quiz:v4')
+    expect(AGENT_QUIZ_PROMPT_CACHE_KEY).toBe('agent-interview-quiz:v5')
     expect(AGENT_QUIZ_PROMPT_CACHE_KEY).not.toContain('thread')
 
     const firstInput = requests[0]!.input as Array<Record<string, unknown>>
@@ -535,6 +550,101 @@ describe('QuizPlanner', () => {
         'search-answer-evidence-call',
       )
     }
+  })
+
+  test('只有市场 JD 模式注册 search_similar_jds，并把有界结果返回模型', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    const catalogCalls: unknown[] = []
+    const selectedItemKey
+      = 'question-signal/jd-market/jd-market-aaaaaaaaaaaaaaaaaaaa.md'
+    const planner = new QuizPlanner(
+      fakeExecutor([
+        loadSkillResponse(),
+        searchSimilarJdsResponse(),
+        searchAnswerEvidenceResponse(),
+        finalResponse(JSON.stringify(createQuizDraft(2))),
+      ], params => requests.push(params)),
+      {
+        ...plannerOptions(),
+        marketJdCatalog: {
+          async search(input) {
+            catalogCalls.push(input)
+            return [{
+              itemKey: 'question-signal/jd-market/jd-market-bbbbbbbbbbbbbbbbbbbb.md',
+              title: 'AI Agent 前端工程师',
+              company: '示例公司',
+              location: '广州',
+              salary: '20-35K',
+              highlights: ['React', 'LangGraph'],
+              focusKnowledgePoints: ['LangGraph', 'Tool Calling'],
+              summary: '负责 Agent 前端与 Tool Calling 交互。',
+            }]
+          },
+        },
+      },
+    )
+
+    const result = await planner.createRound({
+      ...validPlannerInput(),
+      jdContext: {
+        reference: {
+          source: SelectedJdSource.Market,
+          itemKey: selectedItemKey,
+        },
+        title: 'Agent 前端工程师',
+        focusKnowledgePoints: ['LangGraph'],
+      },
+    }, { signal: new AbortController().signal })
+
+    expect(result.ok).toBe(true)
+    expect(catalogCalls[0]).toMatchObject({
+      query: 'Agent 前端共同要求',
+      limit: 3,
+      excludeItemKey: selectedItemKey,
+    })
+    const firstTools = requests[0]?.tools as Array<{ name: string }>
+    expect(firstTools.map(tool => tool.name)).toContain(
+      JdToolName.SearchSimilarJds,
+    )
+    expect(JSON.stringify(requests[2]?.input)).toContain('示例公司')
+  })
+
+  test('相近 JD 搜索超额时在执行任何 Catalog 查询前拒绝整轮', async () => {
+    let searchCount = 0
+    const calls = Array.from(
+      { length: MAX_SIMILAR_JD_SEARCHES + 1 },
+      (_, index) => ({
+        callId: `similar-jd-${index}`,
+        name: JdToolName.SearchSimilarJds,
+        arguments: { query: `Agent 前端 ${index}` },
+      }),
+    )
+    const planner = new QuizPlanner(
+      fakeExecutor([loadSkillResponse(), functionCallResponse(calls)]),
+      {
+        ...plannerOptions(),
+        marketJdCatalog: {
+          async search() {
+            searchCount += 1
+            return []
+          },
+        },
+      },
+    )
+    const itemKey
+      = 'question-signal/jd-market/jd-market-aaaaaaaaaaaaaaaaaaaa.md'
+
+    const result = await planner.createRound({
+      ...validPlannerInput(),
+      jdContext: {
+        reference: { source: SelectedJdSource.Market, itemKey },
+        title: 'Agent 前端工程师',
+        focusKnowledgePoints: ['LangGraph'],
+      },
+    }, { signal: new AbortController().signal })
+
+    expectPlannerError(result, InterviewQuizErrorCode.SimilarJdSearchLimit)
+    expect(searchCount).toBe(0)
   })
 
   test('没有 answer_evidence 就输出时返回稳定错误', async () => {

@@ -4,6 +4,7 @@ import type { QuizRoundRecord } from './contracts'
 import type { InterviewQuizError } from './errors'
 import type { QuizPlanner } from './planning'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
+import type { JdContext, MarketJdCatalog } from '@/jd/contracts'
 import type { KnowledgeRetriever } from '@/knowledge/contracts'
 import type {
   LearningMemory,
@@ -18,7 +19,9 @@ import {
   StateGraph,
 } from '@langchain/langgraph'
 import { err, ok } from 'neverthrow'
-import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
+import { SelectedJdSource } from '@/jd/contracts'
+import { extractJdFocus } from '@/jd/extract-jd-focus'
+import { KnowledgeEvidenceRole, KnowledgeSourceType } from '@/knowledge/contracts'
 import {
   InterviewQuizStatus,
   QuizCompletionReason,
@@ -44,6 +47,10 @@ export interface CreateInterviewQuizGraphOptions {
   planner: Pick<QuizPlanner, 'createRound' | 'materializeRoundPlan'>
   /** Graph 首次固定预取 question_signal；追加检索由 Planner Tool 负责。 */
   questionSignalRetriever: Pick<KnowledgeRetriever, 'search'>
+  /** 用户 JD 只从 owner-scoped 本地 Store 精确读取。 */
+  jdRetriever?: Pick<KnowledgeRetriever, 'loadDocument'>
+  /** 公共市场 JD 通过共享 Catalog 读取，不使用 learner owner。 */
+  marketJdCatalog?: Pick<MarketJdCatalog, 'load'>
   /** Graph 确定性读写正式题库，不把它暴露为模型 Tool。 */
   questionBank: QuestionBank
   /** 跨 Session 作答事实；Graph 不知道 SQLite 或 D1 的实现细节。 */
@@ -96,11 +103,17 @@ function buildKnowledgeQuery(state: {
   } | null
   rounds: Array<{ result: { wrongKnowledgePoints: string[] } }>
   memoryContext: LearningMemoryContext
+  jdContext: JdContext | null
 }) {
-  const focusKnowledgePoints = state.roundContext?.strategy
+  const wrongKnowledgePoints = state.roundContext?.strategy
     === QuizStrategy.Remediate
     ? state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []
-    : state.memoryContext.weakKnowledgePoints
+    : []
+  const focusKnowledgePoints = wrongKnowledgePoints.length > 0
+    ? wrongKnowledgePoints
+    : state.jdContext?.focusKnowledgePoints.length
+      ? state.jdContext.focusKnowledgePoints
+      : state.memoryContext.weakKnowledgePoints
   const focus = focusKnowledgePoints.length > 0
     ? focusKnowledgePoints.join(' ')
     : 'Agent 工程 Tool Calling LangGraph Context Memory'
@@ -204,6 +217,85 @@ export function createInterviewQuizGraph(
         }
       }
     })
+    .addNode('load_jd_context', async (state, { signal }) => {
+      const selectedJd = state.config.selectedJd
+      if (!selectedJd)
+        return { jdContext: null, status: InterviewQuizStatus.Planning }
+
+      try {
+        if (selectedJd.source === SelectedJdSource.Market) {
+          if (!options.marketJdCatalog) {
+            return {
+              status: InterviewQuizStatus.Failed,
+              error: createInterviewQuizError(
+                InterviewQuizErrorCode.JdContextLoadFailed,
+              ),
+            }
+          }
+
+          const jdContext = await options.marketJdCatalog.load({
+            itemKey: selectedJd.itemKey,
+            signal,
+          })
+          if (!jdContext) {
+            return {
+              status: InterviewQuizStatus.Failed,
+              error: createInterviewQuizError(
+                InterviewQuizErrorCode.JdNotFound,
+              ),
+            }
+          }
+
+          return {
+            jdContext,
+            status: InterviewQuizStatus.Planning,
+          }
+        }
+
+        if (!options.jdRetriever) {
+          return {
+            status: InterviewQuizStatus.Failed,
+            error: createInterviewQuizError(
+              InterviewQuizErrorCode.JdContextLoadFailed,
+            ),
+          }
+        }
+
+        const chunks = await options.jdRetriever.loadDocument({
+          documentId: selectedJd.documentId,
+          ownerId: state.learnerId,
+          sourceType: KnowledgeSourceType.Jd,
+          signal,
+        })
+        if (chunks.length === 0) {
+          return {
+            status: InterviewQuizStatus.Failed,
+            error: createInterviewQuizError(
+              InterviewQuizErrorCode.JdNotFound,
+            ),
+          }
+        }
+
+        return {
+          jdContext: {
+            reference: selectedJd,
+            title: chunks[0]?.title ?? 'Selected JD',
+            focusKnowledgePoints: extractJdFocus(
+              chunks.map(chunk => chunk.text).join('\n'),
+            ),
+          },
+          status: InterviewQuizStatus.Planning,
+        }
+      }
+      catch {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.JdContextLoadFailed,
+          ),
+        }
+      }
+    })
     .addNode('load_question_history', async (state, { signal }) => {
       if (!state.roundContext) {
         return {
@@ -256,6 +348,7 @@ export function createInterviewQuizGraph(
           limit: 4,
           filter: {
             evidenceRoles: [KnowledgeEvidenceRole.QuestionSignal],
+            ownerId: null,
           },
           signal,
         })
@@ -296,6 +389,7 @@ export function createInterviewQuizGraph(
         ])].slice(0, MAX_FORBIDDEN_QUESTION_STEMS),
         retrievedChunks: state.retrievedChunks,
         memoryContext: state.memoryContext,
+        jdContext: state.jdContext,
       }
 
       try {
@@ -525,6 +619,11 @@ export function createInterviewQuizGraph(
     .addEdge(START, 'initialize')
     .addEdge('initialize', 'load_memory')
     .addConditionalEdges('load_memory', state => (
+      state.status === InterviewQuizStatus.Failed
+        ? END
+        : 'load_jd_context'
+    ))
+    .addConditionalEdges('load_jd_context', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
         : 'load_question_history'

@@ -9,7 +9,11 @@ import {
   QuizRoundRequestSchema,
 } from '@/agent/interview-quiz/execution'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
-import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
+import { SelectedJdSource } from '@/jd/contracts'
+import {
+  KnowledgeEvidenceRole,
+  KnowledgeSourceType,
+} from '@/knowledge/contracts'
 import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import {
   createQuizGraphFixture,
@@ -39,6 +43,98 @@ function findRoundRequest(snapshot: StateSnapshot) {
 }
 
 describe('Interview Quiz Graph RAG', () => {
+  test('选择 JD 时只加载 owner-scoped 重点，并让公共 question_signal 查询使用 JD 重点', async () => {
+    const { graph, knowledgeRetriever, planner } = createQuizGraphFixture()
+    knowledgeRetriever.jdDocuments.push({
+      chunkId: 'jd:test:chunk:0',
+      documentId: 'jd:test',
+      sourceType: KnowledgeSourceType.Jd,
+      evidenceRole: KnowledgeEvidenceRole.QuestionSignal,
+      ownerId: TEST_LEARNER_ID,
+      title: 'Agent 前端工程师',
+      sourceUri: 'user-upload:jd:test',
+      heading: '要求',
+      text: '熟悉 LangGraph、RAG 和 MCP，能够建设 Agent 应用。',
+      ordinal: 0,
+    })
+    const threadId = 'quiz-jd-context-thread'
+
+    await graph.invoke({
+      threadId,
+      learnerId: TEST_LEARNER_ID,
+      config: {
+        initialDifficulty: QuizDifficulty.Foundation,
+        maxRounds: 1,
+        selectedJd: {
+          source: SelectedJdSource.UserUpload,
+          documentId: 'jd:test',
+        },
+      },
+    }, config(threadId))
+
+    findRoundRequest(await graph.getState(config(threadId)))
+    expect(planner.calls[0]?.jdContext).toEqual({
+      reference: {
+        source: SelectedJdSource.UserUpload,
+        documentId: 'jd:test',
+      },
+      title: 'Agent 前端工程师',
+      focusKnowledgePoints: ['LangGraph', 'RAG', 'MCP'],
+    })
+    expect(knowledgeRetriever.calls[0]?.query).toContain('LangGraph')
+    expect(knowledgeRetriever.calls[0]?.query).toContain('RAG')
+  })
+
+  test('选择市场 JD 时由 MarketJdCatalog 加载，而不是读取 learner 私有文档', async () => {
+    const planner = new FakeQuizPlanner()
+    const knowledgeRetriever = new FakeKnowledgeRetriever()
+    const itemKey
+      = 'question-signal/jd-market/jd-market-aaaaaaaaaaaaaaaaaaaa.md'
+    const loadCalls: string[] = []
+    const graph = createInterviewQuizGraph({
+      checkpointer: new MemorySaver(),
+      planner,
+      questionSignalRetriever: knowledgeRetriever,
+      jdRetriever: knowledgeRetriever,
+      marketJdCatalog: {
+        async load(input) {
+          loadCalls.push(input.itemKey)
+          return {
+            reference: {
+              source: SelectedJdSource.Market,
+              itemKey,
+            },
+            title: 'AI Agent 前端工程师',
+            focusKnowledgePoints: ['LangGraph', 'Tool Calling'],
+          }
+        },
+      },
+      questionBank: new InMemoryQuestionBank(),
+      learningMemory: new FakeLearningMemory(),
+    })
+    const threadId = 'quiz-market-jd-context-thread'
+
+    await graph.invoke({
+      threadId,
+      learnerId: TEST_LEARNER_ID,
+      config: {
+        initialDifficulty: QuizDifficulty.Foundation,
+        maxRounds: 1,
+        selectedJd: {
+          source: SelectedJdSource.Market,
+          itemKey,
+        },
+      },
+    }, config(threadId))
+
+    findRoundRequest(await graph.getState(config(threadId)))
+    expect(loadCalls).toEqual([itemKey])
+    expect(planner.calls[0]?.jdContext).toMatchObject({
+      reference: { source: SelectedJdSource.Market, itemKey },
+      focusKnowledgePoints: ['LangGraph', 'Tool Calling'],
+    })
+  })
+
   test('Graph 只预取 question_signal，Planner 返回动态 answer_evidence', async () => {
     const planner = new FakeQuizPlanner()
     const knowledgeRetriever = new FakeKnowledgeRetriever()

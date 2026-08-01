@@ -1,6 +1,6 @@
 import type {
   KnowledgeFilter,
-  KnowledgeRetriever,
+  KnowledgeSearchRetriever,
   RetrievedChunk,
 } from './contracts'
 import process from 'node:process'
@@ -36,9 +36,9 @@ export class CloudflareAiSearchError extends Error {
 export interface CloudflareAiSearchRetrieverOptions {
   searchUrl: string
   apiToken?: string
-  /** 这个实例里的资料默认属于什么来源。 */
-  sourceType: KnowledgeSourceType
-  /** 这个实例里的资料默认承担什么证据角色。 */
+  /** 当前 Retriever 允许读取的来源；会转换成服务端固定 Filter。 */
+  sourceTypes: readonly KnowledgeSourceType[]
+  /** 当前 Retriever 允许读取的唯一证据角色。 */
   evidenceRole: KnowledgeEvidenceRole
   fetch?: FetchLike
 }
@@ -109,12 +109,34 @@ function filterContains<T>(values: readonly T[] | undefined, value: T) {
   return !values?.length || values.includes(value)
 }
 
-function matchesConfiguredRole(
+function resolveSourceTypes(
   filter: KnowledgeFilter | undefined,
   options: CloudflareAiSearchRetrieverOptions,
-) {
-  return filterContains(filter?.sourceTypes, options.sourceType)
-    && filterContains(filter?.evidenceRoles, options.evidenceRole)
+): KnowledgeSourceType[] {
+  if (!filterContains(filter?.evidenceRoles, options.evidenceRole))
+    return []
+
+  return options.sourceTypes.filter(sourceType => (
+    filterContains(filter?.sourceTypes, sourceType)
+  ))
+}
+
+/**
+ * KnowledgeFilter 使用项目自己的 documentId；Cloudflare Item Key 带目录，
+ * Search Filter 则按内置 filename 精确匹配。只接受简单文件名，避免把任意
+ * Filter 表达式从上层透传给远程服务。
+ */
+function resolveFilenames(filter: KnowledgeFilter | undefined) {
+  if (!filter?.documentIds)
+    return undefined
+
+  const filenames = filter.documentIds
+    .map(documentId => documentId.split('/').at(-1)?.trim())
+    .filter((filename): filename is string => (
+      typeof filename === 'string' && /^[\w.-]+$/.test(filename)
+    ))
+
+  return [...new Set(filenames)]
 }
 
 function metadataString(
@@ -126,13 +148,11 @@ function metadataString(
 }
 
 /**
- * 一个 AI Search 实例对应一个稳定的来源/证据角色。
- *
- * 本项目当前把配置的远程实例当作 answer_evidence 实例，
- * interview-bank 的 question_signal 仍由本地 Retriever 提供。这样不会
- * 把“来源角色”交给模型猜，也不要求在第一版就实现多租户 metadata 路由。
+ * 同一个 AI Search 实例可以保存多类资料，但每个 Retriever 仍然只负责
+ * 一个证据角色，并在服务端固定提交 evidence_role + source_type Filter。
+ * 模型只能提供 query，不能改变信任边界或扩大检索范围。
  */
-export class CloudflareAiSearchRetriever implements KnowledgeRetriever {
+export class CloudflareAiSearchRetriever implements KnowledgeSearchRetriever {
   private readonly request: FetchLike
 
   constructor(private readonly options: CloudflareAiSearchRetrieverOptions) {
@@ -147,8 +167,15 @@ export class CloudflareAiSearchRetriever implements KnowledgeRetriever {
   }): Promise<RetrievedChunk[]> {
     input.signal.throwIfAborted()
 
-    // 如果本次 Graph 请求的是另一个角色，不应访问这个实例。
-    if (!matchesConfiguredRole(input.filter, this.options))
+    const sourceTypes = resolveSourceTypes(input.filter, this.options)
+    // 如果 Graph 请求的是另一个角色或来源，不应访问远程实例。
+    if (sourceTypes.length === 0)
+      return []
+
+    const filenames = resolveFilenames(input.filter)
+    // 调用方明确指定 documentIds 却没有一个可安全转换时，必须返回空结果，
+    // 不能静默退化为跨整个实例的语义搜索。
+    if (filenames?.length === 0)
       return []
 
     const headers = new Headers({
@@ -167,6 +194,19 @@ export class CloudflareAiSearchRetriever implements KnowledgeRetriever {
           ai_search_options: {
             retrieval: {
               max_num_results: Math.min(Math.max(input.limit, 0), 50),
+              filters: {
+                evidence_role: this.options.evidenceRole,
+                source_type: sourceTypes.length === 1
+                  ? sourceTypes[0]
+                  : { $in: sourceTypes },
+                ...(filenames
+                  ? {
+                      filename: filenames.length === 1
+                        ? filenames[0]
+                        : { $in: filenames },
+                    }
+                  : {}),
+              },
             },
           },
         }),
@@ -198,22 +238,42 @@ export class CloudflareAiSearchRetriever implements KnowledgeRetriever {
     }
 
     return parseChunks(body)
+      .filter((chunk) => {
+        const sourceType = metadataString(chunk.metadata, 'source_type')
+        const evidenceRole = metadataString(chunk.metadata, 'evidence_role')
+        return sourceTypes.includes(sourceType as KnowledgeSourceType)
+          && evidenceRole === this.options.evidenceRole
+      })
       .slice(0, Math.max(0, input.limit))
-      .map((chunk, ordinal) => ({
-        chunkId: `cloudflare-ai-search:${chunk.id}`,
-        documentId: chunk.itemKey ?? chunk.id,
-        sourceType: this.options.sourceType,
-        evidenceRole: this.options.evidenceRole,
-        title: chunk.itemKey ?? 'Cloudflare AI Search result',
-        sourceUri: `cloudflare-ai-search:${chunk.itemKey ?? chunk.id}`,
-        heading: metadataString(chunk.metadata, 'heading')
-          ?? chunk.itemKey
-          ?? 'Cloudflare AI Search result',
-        text: chunk.text,
-        ordinal,
-        score: chunk.score,
-      }))
+      .map((chunk, ordinal) => {
+        const sourceType = metadataString(
+          chunk.metadata,
+          'source_type',
+        ) as KnowledgeSourceType
+
+        return {
+          chunkId: `cloudflare-ai-search:${chunk.id}`,
+          documentId: chunk.itemKey ?? chunk.id,
+          sourceType,
+          evidenceRole: this.options.evidenceRole,
+          ownerId: null,
+          title: chunk.itemKey ?? 'Cloudflare AI Search result',
+          sourceUri: `cloudflare-ai-search:${chunk.itemKey ?? chunk.id}`,
+          heading: metadataString(chunk.metadata, 'heading')
+            ?? chunk.itemKey
+            ?? 'Cloudflare AI Search result',
+          text: chunk.text,
+          ordinal,
+          score: chunk.score,
+        }
+      })
   }
+}
+
+export interface CreateCloudflareAiSearchRetrieverOptions {
+  sourceTypes?: readonly KnowledgeSourceType[]
+  evidenceRole?: KnowledgeEvidenceRole
+  request?: FetchLike
 }
 
 /**
@@ -223,7 +283,7 @@ export class CloudflareAiSearchRetriever implements KnowledgeRetriever {
  */
 export function createCloudflareAiSearchRetrieverFromEnv(
   env: Record<string, string | undefined> = process.env,
-  request: FetchLike = globalThis.fetch,
+  options: CreateCloudflareAiSearchRetrieverOptions = {},
 ): CloudflareAiSearchRetriever | undefined {
   const explicitSearchUrl = env.CLOUDFLARE_AI_SEARCH_SEARCH_URL?.trim()
   const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim()
@@ -241,8 +301,9 @@ export function createCloudflareAiSearchRetrieverFromEnv(
   return new CloudflareAiSearchRetriever({
     searchUrl,
     ...(apiToken ? { apiToken } : {}),
-    sourceType: KnowledgeSourceType.Official,
-    evidenceRole: KnowledgeEvidenceRole.AnswerEvidence,
-    fetch: request,
+    sourceTypes: options.sourceTypes ?? [KnowledgeSourceType.Official],
+    evidenceRole: options.evidenceRole
+      ?? KnowledgeEvidenceRole.AnswerEvidence,
+    fetch: options.request ?? globalThis.fetch,
   })
 }

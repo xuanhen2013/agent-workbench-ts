@@ -6,6 +6,7 @@ import type {
   QuizStrategy,
 } from './contracts'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
+import type { JdContext } from '@/jd/contracts'
 import type { RetrievedChunk } from '@/knowledge/contracts'
 import type { LearningMemoryContext } from '@/learning-memory/contracts'
 import { ReducedValue, StateSchema } from '@langchain/langgraph'
@@ -74,6 +75,9 @@ export const InterviewQuizStateSchema = new StateSchema({
   memoryContext: z.custom<LearningMemoryContext>().default(() => ({
     weakKnowledgePoints: [],
   })),
+
+  /** 当前 Thread 的有界 JD 信号；不保存用户粘贴的 JD 原文。 */
+  jdContext: z.custom<JdContext>().nullable().default(null),
 
   /** 已完成轮次。verify 每次只返回一个新元素，由 Reducer 追加。 */
   rounds: new ReducedValue(

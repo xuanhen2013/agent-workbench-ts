@@ -46,6 +46,7 @@ export function chunkDocuments(
         documentId: document.documentId,
         sourceType: document.sourceType,
         evidenceRole: document.evidenceRole,
+        ownerId: document.ownerId,
         title: document.title,
         sourceUri: document.sourceUri,
         heading: part.heading,
@@ -156,6 +157,28 @@ export class InMemoryKnowledgeStore implements KnowledgeStore {
       ))
       .slice(0, Math.max(0, input.limit))
   }
+
+  /**
+   * 精确读取满足 Filter 的 Chunk，并按文档内顺序返回。
+   * JD 加载需要完整文档，不能用可能漏 Chunk 的相似度 Top-K。
+   */
+  async list(input: {
+    filter: KnowledgeFilter
+    signal: AbortSignal
+  }): Promise<KnowledgeChunk[]> {
+    const chunks: KnowledgeChunk[] = []
+
+    for (const { chunk } of this.rows.values()) {
+      input.signal.throwIfAborted()
+      if (matchesFilter(chunk, input.filter))
+        chunks.push({ ...chunk })
+    }
+
+    return chunks.sort((left, right) => (
+      left.ordinal - right.ordinal
+      || left.chunkId.localeCompare(right.chunkId)
+    ))
+  }
 }
 
 /** 资料角色过滤属于 RAG 业务规则，所以保留在主流程文件中。 */
@@ -176,6 +199,16 @@ function matchesFilter(
   ) {
     return false
   }
+
+  if (
+    filter?.documentIds?.length
+    && !filter.documentIds.includes(chunk.documentId)
+  ) {
+    return false
+  }
+
+  if (filter?.ownerId !== undefined && chunk.ownerId !== filter.ownerId)
+    return false
 
   return true
 }
@@ -206,6 +239,22 @@ export class InMemoryKnowledgeRetriever implements KnowledgeRetriever {
       vector: queryVector,
       limit: input.limit,
       filter: input.filter,
+      signal: input.signal,
+    })
+  }
+
+  async loadDocument(input: {
+    documentId: string
+    ownerId: string
+    sourceType: KnowledgeChunk['sourceType']
+    signal: AbortSignal
+  }): Promise<KnowledgeChunk[]> {
+    return await this.store.list({
+      filter: {
+        documentIds: [input.documentId],
+        ownerId: input.ownerId,
+        sourceTypes: [input.sourceType],
+      },
       signal: input.signal,
     })
   }

@@ -58,6 +58,18 @@ blockquote { margin: 16px 0 0; color: #20251f; font-family: Georgia, serif; font
 .quiz-config p:not(.eyebrow) { color: #5a675e; }
 .quiz-config label { display: grid; gap: 8px; color: #425249; font-size: 13px; font-weight: 750; }
 select { min-width: 130px; border: 1px solid #cbd6ce; border-radius: 12px; padding: 11px 13px; background: white; color: #172019; font: inherit; }
+input, textarea { width: 100%; border: 1px solid #cbd6ce; border-radius: 12px; padding: 11px 13px; background: white; color: #172019; font: inherit; }
+textarea { resize: vertical; line-height: 1.5; }
+.quiz-jd-field { grid-column: 1 / -1; }
+.market-jd-picker { display: grid; grid-column: 1 / -1; gap: 12px; }
+.market-jd-search-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+.market-jd-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.market-jd-card { display: grid; gap: 5px; border: 1px solid #d4ded6; border-radius: 16px; padding: 15px; background: #f7f8f5; color: #22362a; text-align: left; }
+.market-jd-card.selected { border-color: #467458; background: #dce9df; box-shadow: inset 0 0 0 1px #467458; }
+.market-jd-card span, .market-jd-card small { color: #637168; font-weight: 600; }
+.market-jd-card .market-jd-highlights { color: #365642; font-size: 12px; }
+.quiz-config-divider { grid-column: 1 / -1; margin: 4px 0 0; text-align: center; }
+.jd-imported { grid-column: 1 / -1; margin: 0; }
 .quiz-paper, .quiz-results, .quiz-summary { margin-top: 22px; }
 .quiz-questions { display: grid; gap: 20px; margin: 28px 0; }
 .quiz-question { margin: 0; border: 1px solid #d4ded6; border-radius: 20px; padding: 22px; }
@@ -93,6 +105,7 @@ select { min-width: 130px; border: 1px solid #cbd6ce; border-radius: 12px; paddi
   .card { padding: 22px; border-radius: 22px; }
   .start-card { align-items: stretch; flex-direction: column; }
   .quiz-config { grid-template-columns: 1fr; align-items: stretch; }
+  .market-jd-search-row, .market-jd-list { grid-template-columns: 1fr; }
   .actions { flex-direction: column; }
   .actions button { width: 100%; }
   .usage-details dl { grid-template-columns: repeat(2, 1fr); }
