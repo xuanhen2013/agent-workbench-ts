@@ -3,7 +3,7 @@ import type { QuizRoundPlan } from '@/agent/interview-quiz/contracts'
 import type {
   FindRecentStemsInput,
   QuestionBank,
-} from '@/question-bank/contracts'
+} from '@/agent/interview-quiz/question-bank/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, expect, test } from 'bun:test'
 import {
@@ -13,7 +13,7 @@ import {
 import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import { QuizRoundRequestSchema } from '@/agent/interview-quiz/execution'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
-import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
+import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
 import {
   FakeKnowledgeRetriever,
   FakeLearningMemory,

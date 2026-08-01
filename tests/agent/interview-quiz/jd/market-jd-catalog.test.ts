@@ -4,8 +4,8 @@ import type {
   RetrievedChunk,
 } from '@/knowledge/contracts'
 import { describe, expect, test } from 'bun:test'
-import { SelectedJdSource } from '@/jd/contracts'
-import { RetrievedMarketJdCatalog } from '@/jd/market-jd-catalog'
+import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
+import { RetrievedMarketJdCatalog } from '@/agent/interview-quiz/jd/market-jd-catalog'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,

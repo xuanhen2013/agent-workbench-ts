@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { extractJdFocus } from '@/jd/extract-jd-focus'
+import { extractJdFocus } from '@/agent/interview-quiz/jd/extract-jd-focus'
 
 describe('extractJdFocus', () => {
   test('按固定别名提取有界 Agent 重点', () => {

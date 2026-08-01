@@ -1,7 +1,7 @@
 import type {
   MarketJdCatalog,
   SimilarJdSignal,
-} from '@/jd/contracts'
+} from '@/agent/interview-quiz/jd/contracts'
 import type { MiniTool } from '@/tools/_core/types'
 import { z } from 'zod/v4'
 import { defineTool } from '@/tools/_core'

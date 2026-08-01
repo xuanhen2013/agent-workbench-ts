@@ -2,11 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
+import { loadInterviewBankDocuments } from '@/agent/interview-quiz/corpus/interview-bank-loader'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
-import { loadInterviewBankDocuments } from '@/knowledge/interview-bank-loader'
 
 describe('interview-bank Loader', () => {
   test('只读取 Markdown、排序稳定，并固定为 question_signal', async () => {

@@ -2,7 +2,7 @@ import process from 'node:process'
 import { expect, test } from 'bun:test'
 import {
   createCloudflareD1QuestionBankFromEnv,
-} from '@/question-bank/cloudflare-d1-question-bank'
+} from '@/agent/interview-quiz/question-bank/cloudflare-d1-question-bank'
 import { materializeTestPlan } from '../helpers/quiz'
 
 const requiredEnvironment = [

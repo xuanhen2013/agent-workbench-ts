@@ -4,12 +4,16 @@ import process from 'node:process'
 import { MemorySaver } from '@langchain/langgraph'
 import { Database } from 'bun:sqlite'
 import { createInterruptGraph } from '@/agent/interrupt/interrupt-graph'
+import { loadInterviewBankDocuments } from '@/agent/interview-quiz/corpus/interview-bank-loader'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
+import { importJdDocument } from '@/agent/interview-quiz/jd/import-jd'
+import { RetrievedMarketJdCatalog } from '@/agent/interview-quiz/jd/market-jd-catalog'
+import { SqliteLearningMemory } from '@/agent/interview-quiz/learning-memory/sqlite-learning-memory'
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
+import { createCloudflareD1QuestionBankFromEnv } from '@/agent/interview-quiz/question-bank/cloudflare-d1-question-bank'
+import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
 import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
 import { createOpenAIResponsesExecutor } from '@/clients/openai'
-import { importJdDocument } from '@/jd/import-jd'
-import { RetrievedMarketJdCatalog } from '@/jd/market-jd-catalog'
 import { createCloudflareAiSearchRetrieverFromEnv } from '@/knowledge/cloudflare-ai-search'
 import {
   KnowledgeEvidenceRole,
@@ -21,10 +25,6 @@ import {
   InMemoryKnowledgeRetriever,
   InMemoryKnowledgeStore,
 } from '@/knowledge/in-memory-rag'
-import { loadInterviewBankDocuments } from '@/knowledge/interview-bank-loader'
-import { SqliteLearningMemory } from '@/learning-memory/sqlite-learning-memory'
-import { createCloudflareD1QuestionBankFromEnv } from '@/question-bank/cloudflare-d1-question-bank'
-import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import { loadSkillCatalog } from '@/skills/skill-loader'
 
 /** 正式进程只创建一次 Graph 和 MemorySaver，所有 Joke Route 共享同一状态仓库。 */

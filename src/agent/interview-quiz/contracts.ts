@@ -1,5 +1,5 @@
 import { z } from 'zod/v4'
-import { SelectedJdReferenceSchema } from '@/jd/contracts'
+import { SelectedJdReferenceSchema } from '@/agent/interview-quiz/jd/contracts'
 
 export enum QuizDifficulty {
   Foundation = 'foundation',

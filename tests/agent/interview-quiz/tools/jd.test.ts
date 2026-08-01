@@ -1,9 +1,9 @@
-import type { MarketJdSearchResult } from '@/jd/contracts'
+import type { MarketJdSearchResult } from '@/agent/interview-quiz/jd/contracts'
 import { describe, expect, test } from 'bun:test'
 import {
   createSearchSimilarJdsTool,
   SIMILAR_JD_LIMIT_PER_SEARCH,
-} from '@/tools/jd'
+} from '@/agent/interview-quiz/tools/jd'
 
 const selectedItemKey
   = 'question-signal/jd-market/jd-market-aaaaaaaaaaaaaaaaaaaa.md'

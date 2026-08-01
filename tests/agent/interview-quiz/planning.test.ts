@@ -12,6 +12,7 @@ import {
   QuizStrategy,
 } from '@/agent/interview-quiz/contracts'
 import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
+import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
 import {
   AGENT_QUIZ_INSTRUCTIONS,
   AGENT_QUIZ_PROMPT_CACHE_KEY,
@@ -24,15 +25,14 @@ import {
   renderForbiddenQuestionStems,
   renderLearningMemory,
 } from '@/agent/interview-quiz/planning'
+import { JdToolName } from '@/agent/interview-quiz/tools/jd'
+import { KnowledgeToolName } from '@/agent/interview-quiz/tools/knowledge'
 import { OpenAIResponsesExecutor } from '@/clients/openai'
-import { SelectedJdSource } from '@/jd/contracts'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
 import { SkillName } from '@/skills/contracts'
-import { JdToolName } from '@/tools/jd'
-import { KnowledgeToolName } from '@/tools/knowledge'
 import { SkillToolName } from '@/tools/skill'
 import { createQuizDraft as createRawQuizDraft } from '../../helpers/quiz'
 

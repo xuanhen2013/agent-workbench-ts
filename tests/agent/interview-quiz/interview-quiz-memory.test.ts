@@ -4,11 +4,11 @@ import type {
   LearningMemory,
   LearningMemoryContext,
   RoundAttemptInput,
-} from '@/learning-memory/contracts'
+} from '@/agent/interview-quiz/learning-memory/contracts'
 import type {
   FindRecentStemsInput,
   QuestionBank,
-} from '@/question-bank/contracts'
+} from '@/agent/interview-quiz/question-bank/contracts'
 import { Command, MemorySaver } from '@langchain/langgraph'
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
@@ -19,8 +19,8 @@ import {
 import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import { QuizRoundRequestSchema } from '@/agent/interview-quiz/execution'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
-import { SqliteLearningMemory } from '@/learning-memory/sqlite-learning-memory'
-import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
+import { SqliteLearningMemory } from '@/agent/interview-quiz/learning-memory/sqlite-learning-memory'
+import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
 import {
   createQuizGraphFixture,
   FakeKnowledgeRetriever,

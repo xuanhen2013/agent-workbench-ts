@@ -6,9 +6,9 @@ import {
   CloudflareD1QuestionBankError,
   CloudflareD1QuestionBankErrorCode,
   createCloudflareD1QuestionBankFromEnv,
-} from '@/question-bank/cloudflare-d1-question-bank'
-import { createStoredQuizQuestion } from '@/question-bank/fingerprint'
-import { materializeTestPlan } from '../helpers/quiz'
+} from '@/agent/interview-quiz/question-bank/cloudflare-d1-question-bank'
+import { createStoredQuizQuestion } from '@/agent/interview-quiz/question-bank/fingerprint'
+import { materializeTestPlan } from '../../../helpers/quiz'
 
 function signal() {
   return new AbortController().signal

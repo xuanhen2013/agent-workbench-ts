@@ -167,15 +167,14 @@ export const SearchSimilarJdsInputSchema = z.object({
 
 ```text
 src/
-├─ jd/
-│  ├─ contracts.ts                 # JD 引用、Context、Web/Tool DTO
-│  ├─ import-jd.ts                 # 用户粘贴 JD 的导入链路
-│  ├─ extract-jd-focus.ts          # 确定性提取 Agent 重点
-│  └─ market-jd-catalog.ts         # 共享市场 JD 目录与 Markdown 投影
-├─ tools/
-│  └─ jd/
-│     └─ index.ts                  # search_similar_jds Function Tool
 ├─ agent/interview-quiz/
+│  ├─ jd/
+│  │  ├─ contracts.ts              # JD 引用、Context、Web/Tool DTO
+│  │  ├─ import-jd.ts              # 用户粘贴 JD 的导入链路
+│  │  ├─ extract-jd-focus.ts       # 确定性提取 Agent 重点
+│  │  └─ market-jd-catalog.ts      # 共享市场 JD 目录与 Markdown 投影
+│  ├─ tools/
+│  │  └─ jd.ts                     # search_similar_jds Function Tool
 │  ├─ interview-quiz-graph.ts      # load_jd_context 分流
 │  └─ planning.ts                  # 只在市场 JD 模式注册 Tool
 ├─ routes/interview-quiz.ts        # 市场 JD 搜索 API

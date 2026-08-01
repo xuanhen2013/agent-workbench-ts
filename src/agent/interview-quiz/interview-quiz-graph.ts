@@ -3,15 +3,15 @@ import type { Result } from 'neverthrow'
 import type { QuizRoundRecord } from './contracts'
 import type { InterviewQuizError } from './errors'
 import type { QuizPlanner } from './planning'
-import type { OpenAIResponseInputItem } from '@/clients/openai'
-import type { JdContext, MarketJdCatalog } from '@/jd/contracts'
-import type { KnowledgeRetriever } from '@/knowledge/contracts'
+import type { JdContext, MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
 import type {
   LearningMemory,
   LearningMemoryContext,
   RoundAttemptInput,
-} from '@/learning-memory/contracts'
-import type { QuestionBank } from '@/question-bank/contracts'
+} from '@/agent/interview-quiz/learning-memory/contracts'
+import type { QuestionBank } from '@/agent/interview-quiz/question-bank/contracts'
+import type { OpenAIResponseInputItem } from '@/clients/openai'
+import type { KnowledgeRetriever } from '@/knowledge/contracts'
 import {
   END,
   interrupt,
@@ -19,8 +19,8 @@ import {
   StateGraph,
 } from '@langchain/langgraph'
 import { err, ok } from 'neverthrow'
-import { SelectedJdSource } from '@/jd/contracts'
-import { extractJdFocus } from '@/jd/extract-jd-focus'
+import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
+import { extractJdFocus } from '@/agent/interview-quiz/jd/extract-jd-focus'
 import { KnowledgeEvidenceRole, KnowledgeSourceType } from '@/knowledge/contracts'
 import {
   InterviewQuizStatus,

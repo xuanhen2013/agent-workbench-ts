@@ -4,10 +4,10 @@ import type {
   PublicQuizRoundResultSchema,
 } from '@/agent/interview-quiz/execution'
 import type { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
+import type { ImportJdDocument, MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
 import type { InterviewQuizState } from '@/agent/interview-quiz/state'
 import type { AppEnv } from '@/http'
 import type { HttpStatusCode } from '@/http/errors'
-import type { ImportJdDocument, MarketJdCatalog } from '@/jd/contracts'
 import { Command } from '@langchain/langgraph'
 import {
   CreateInterviewQuizBodySchema,
@@ -23,14 +23,14 @@ import {
   QuizRoundResultRequestSchema,
 } from '@/agent/interview-quiz/execution'
 import {
+  ImportJdBodySchema,
+  SearchMarketJdsQuerySchema,
+} from '@/agent/interview-quiz/jd/contracts'
+import {
   createHttpError,
   HttpErrorCode,
   HttpStatus,
 } from '@/http/errors'
-import {
-  ImportJdBodySchema,
-  SearchMarketJdsQuerySchema,
-} from '@/jd/contracts'
 
 export type InterviewQuizGraph = ReturnType<typeof createInterviewQuizGraph>
 

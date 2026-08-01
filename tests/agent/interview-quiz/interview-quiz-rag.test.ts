@@ -9,12 +9,12 @@ import {
   QuizRoundRequestSchema,
 } from '@/agent/interview-quiz/execution'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
-import { SelectedJdSource } from '@/jd/contracts'
+import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
+import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
-import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import {
   createQuizGraphFixture,
   FakeKnowledgeRetriever,

@@ -3,6 +3,12 @@ import type {
   QuizRoundPlan,
 } from '@/agent/interview-quiz/contracts'
 import type { QuizRoundRequest } from '@/agent/interview-quiz/execution'
+import type { ImportJdDocument } from '@/agent/interview-quiz/jd/contracts'
+import type {
+  LearningMemory,
+  LearningMemoryContext,
+  RoundAttemptInput,
+} from '@/agent/interview-quiz/learning-memory/contracts'
 import type {
   QuizPlannerInput,
   QuizPlanResult,
@@ -11,17 +17,11 @@ import type {
   OpenAIResponseInputItem,
   OpenAIResponsesExecutor,
 } from '@/clients/openai'
-import type { ImportJdDocument } from '@/jd/contracts'
 import type {
   KnowledgeChunk,
   KnowledgeRetriever,
   RetrievedChunk,
 } from '@/knowledge/contracts'
-import type {
-  LearningMemory,
-  LearningMemoryContext,
-  RoundAttemptInput,
-} from '@/learning-memory/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import {
   QuestionType,
@@ -30,11 +30,11 @@ import {
 } from '@/agent/interview-quiz/contracts'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
+import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
-import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 
 export const TEST_LEARNER_ID = '00000000-0000-4000-8000-000000000001'
 

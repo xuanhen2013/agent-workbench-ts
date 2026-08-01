@@ -1,7 +1,7 @@
 import type { InterviewQuizView } from '@/routes/interview-quiz'
 import { describe, expect, test } from 'bun:test'
+import { importJdDocument } from '@/agent/interview-quiz/jd/import-jd'
 import { createApp } from '@/app'
-import { importJdDocument } from '@/jd/import-jd'
 import { FakeEmbeddingModel, InMemoryKnowledgeStore } from '@/knowledge/in-memory-rag'
 import { createJokeGraphFixture } from '../helpers/joke'
 import { createQuizGraphFixture, TEST_LEARNER_ID } from '../helpers/quiz'

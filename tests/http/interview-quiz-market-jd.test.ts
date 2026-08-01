@@ -1,4 +1,4 @@
-import type { MarketJdCatalog, MarketJdSearchResult } from '@/jd/contracts'
+import type { MarketJdCatalog, MarketJdSearchResult } from '@/agent/interview-quiz/jd/contracts'
 import { describe, expect, test } from 'bun:test'
 import { createApp } from '@/app'
 import { createJokeGraphFixture } from '../helpers/joke'

@@ -88,7 +88,7 @@ Planner 可以连续调用不同 Tool，但 TypeScript Harness 控制轮次、�
 
 ### 4.1 Knowledge Tools
 
-文件：`src/tools/knowledge/index.ts`
+文件：`src/agent/interview-quiz/tools/knowledge.ts`
 
 ```ts
 import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
@@ -204,10 +204,9 @@ export const ANSWER_EVIDENCE_LIMIT_PER_SEARCH = 5
 ## 5. 文件结构
 
 ```text
-src/tools/knowledge/
-└─ index.ts                    两个只读 Knowledge Tool
-
 src/agent/interview-quiz/
+├─ tools/
+│  └─ knowledge.ts            两个只读 Knowledge Tool
 ├─ planning.ts                Skill + Knowledge 共用一个 Tool Loop
 ├─ interview-quiz-graph.ts    只固定预取 question_signal
 └─ errors.ts                  Planner Tool、检索预算和证据错误
@@ -217,10 +216,9 @@ src/composition-root.ts       明确装配两个 Retriever 的消费者
 skills/knowledge-retrieval/
 └─ SKILL.md                   告诉模型何时查方向、何时查证据
 
-tests/tools/
-└─ knowledge-tools.test.ts
-
 tests/agent/interview-quiz/
+├─ tools/
+│  └─ knowledge.test.ts
 ├─ planning.test.ts
 └─ interview-quiz-rag.test.ts
 ```
@@ -566,7 +564,7 @@ Response 6 → Structured QuizRoundDraft
 5. Web DTO 不包含 Chunk、答案、解析或 Tool Trace。
 
 ```powershell
-bun test tests/tools/knowledge-tools.test.ts
+bun test tests/agent/interview-quiz/tools/knowledge.test.ts
 bun test tests/agent/interview-quiz/planning.test.ts
 bun test tests/agent/interview-quiz/interview-quiz-rag.test.ts
 bun run check

@@ -1,5 +1,5 @@
+import type { ImportJdDocument, MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
 import type { AppEnv } from '@/http'
-import type { ImportJdDocument, MarketJdCatalog } from '@/jd/contracts'
 import type { InterviewQuizGraph } from '@/routes/interview-quiz'
 import type { JokeGraph } from '@/routes/jokes'
 import { Hono } from 'hono'

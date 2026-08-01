@@ -5,10 +5,10 @@ import type {
   QuizRoundRecord,
   QuizStrategy,
 } from './contracts'
+import type { JdContext } from '@/agent/interview-quiz/jd/contracts'
+import type { LearningMemoryContext } from '@/agent/interview-quiz/learning-memory/contracts'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
-import type { JdContext } from '@/jd/contracts'
 import type { RetrievedChunk } from '@/knowledge/contracts'
-import type { LearningMemoryContext } from '@/learning-memory/contracts'
 import { ReducedValue, StateSchema } from '@langchain/langgraph'
 import { z } from 'zod/v4'
 import { removeKnownGatewayMetadata } from '@/clients/openai'

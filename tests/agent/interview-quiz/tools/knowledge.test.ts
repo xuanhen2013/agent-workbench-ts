@@ -1,16 +1,16 @@
 import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
 import { describe, expect, test } from 'bun:test'
 import {
-  KnowledgeEvidenceRole,
-  KnowledgeSourceType,
-} from '@/knowledge/contracts'
-import {
   ANSWER_EVIDENCE_LIMIT_PER_SEARCH,
   createSearchAnswerEvidenceTool,
   createSearchQuestionSignalTool,
   MAX_KNOWLEDGE_CHUNK_TEXT_LENGTH,
   QUESTION_SIGNAL_LIMIT_PER_SEARCH,
-} from '@/tools/knowledge'
+} from '@/agent/interview-quiz/tools/knowledge'
+import {
+  KnowledgeEvidenceRole,
+  KnowledgeSourceType,
+} from '@/knowledge/contracts'
 
 function chunk(
   evidenceRole: KnowledgeEvidenceRole,

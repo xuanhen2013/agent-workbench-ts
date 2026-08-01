@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { QuizDifficulty } from '@/agent/interview-quiz/contracts'
-import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
-import { materializeTestPlan } from '../helpers/quiz'
+import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
+import { materializeTestPlan } from '../../../helpers/quiz'
 
 function signal() {
   return new AbortController().signal

@@ -7,37 +7,37 @@ import type {
   QuizStrategy,
 } from './contracts'
 import type { InterviewQuizError } from './errors'
+import type { JdContext, MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
+import type { LearningMemoryContext } from '@/agent/interview-quiz/learning-memory/contracts'
+import type { SearchKnowledgeOutput } from '@/agent/interview-quiz/tools/knowledge'
 import type {
   OpenAIResponseFunctionTool,
   OpenAIResponseInputItem,
   OpenAIResponsesExecutor,
 } from '@/clients/openai'
-import type { JdContext, MarketJdCatalog } from '@/jd/contracts'
 import type {
   KnowledgeRetriever,
   RetrievedChunk,
 } from '@/knowledge/contracts'
-import type { LearningMemoryContext } from '@/learning-memory/contracts'
 import type { LoadedSkill, SkillCatalogEntry } from '@/skills/contracts'
 import type { MiniTool } from '@/tools/_core/types'
-import type { SearchKnowledgeOutput } from '@/tools/knowledge'
 import { err, ok } from 'neverthrow'
 import { zodTextFormat } from 'openai/helpers/zod'
-import { toModelTurn } from '@/agent/react/model-adapter'
-import { SelectedJdSource } from '@/jd/contracts'
-import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
-import { SkillName } from '@/skills/contracts'
-import { ToolExecutor, ToolRegistry } from '@/tools/_core'
-import { toResponseTool } from '@/tools/_core/adapters/openai-response'
+import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
 import {
   createSearchSimilarJdsTool,
   JdToolName,
-} from '@/tools/jd'
+} from '@/agent/interview-quiz/tools/jd'
 import {
   createSearchAnswerEvidenceTool,
   createSearchQuestionSignalTool,
   KnowledgeToolName,
-} from '@/tools/knowledge'
+} from '@/agent/interview-quiz/tools/knowledge'
+import { toModelTurn } from '@/agent/react/model-adapter'
+import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
+import { SkillName } from '@/skills/contracts'
+import { ToolExecutor, ToolRegistry } from '@/tools/_core'
+import { toResponseTool } from '@/tools/_core/adapters/openai-response'
 import {
   createSkillTools,
   SkillToolName,

@@ -4,8 +4,8 @@ import {
   canonicalizeQuestion,
   createBankQuestionId,
   createQuestionFingerprint,
-} from '@/question-bank/fingerprint'
-import { materializeTestPlan } from '../helpers/quiz'
+} from '@/agent/interview-quiz/question-bank/fingerprint'
+import { materializeTestPlan } from '../../../helpers/quiz'
 
 describe('question fingerprint', () => {
   test('忽略展示 ID、大小写、空白、选项顺序和答案顺序', () => {

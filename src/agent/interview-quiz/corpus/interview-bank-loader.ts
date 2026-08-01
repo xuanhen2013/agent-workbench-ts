@@ -1,11 +1,11 @@
-import type { SourceDocument } from './contracts'
+import type { SourceDocument } from '@/knowledge/contracts'
 import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
-} from './contracts'
+} from '@/knowledge/contracts'
 
 /**
  * 读取题库目录，但不给题库“答案证据”权限。

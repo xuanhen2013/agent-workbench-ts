@@ -1,4 +1,4 @@
-import type { RoundAttemptInput } from '@/learning-memory/contracts'
+import type { RoundAttemptInput } from '@/agent/interview-quiz/learning-memory/contracts'
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
 import { QuizDifficulty } from '@/agent/interview-quiz/contracts'
@@ -7,7 +7,7 @@ import {
   LearningMemoryInputError,
   LearningMemoryInputErrorCode,
   SqliteLearningMemory,
-} from '@/learning-memory/sqlite-learning-memory'
+} from '@/agent/interview-quiz/learning-memory/sqlite-learning-memory'
 
 const signal = new AbortController().signal
 

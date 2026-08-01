@@ -1,6 +1,6 @@
 import type { SourceDocument } from '@/knowledge/contracts'
 import { describe, expect, test } from 'bun:test'
-import { importJdDocument, normalizeJdContent } from '@/jd/import-jd'
+import { importJdDocument, normalizeJdContent } from '@/agent/interview-quiz/jd/import-jd'
 import { KnowledgeEvidenceRole, KnowledgeSourceType } from '@/knowledge/contracts'
 import {
   chunkDocuments,
