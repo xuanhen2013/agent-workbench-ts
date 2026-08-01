@@ -9,8 +9,8 @@ import type { AppEnv } from '@/http'
 import type { HttpStatusCode } from '@/http/errors'
 import { Command } from '@langchain/langgraph'
 import {
+  CreateInterviewQuizBodySchema,
   InterviewQuizStatus,
-  QuizConfigSchema,
   QuizRoundSubmissionSchema,
 } from '@/agent/interview-quiz/contracts'
 import {
@@ -182,8 +182,8 @@ export function registerInterviewQuizRoutes(
     if (!json.ok)
       return errorResponse(c, HttpStatus.BadRequest, json.error)
 
-    const config = QuizConfigSchema.safeParse(json.value)
-    if (!config.success) {
+    const body = CreateInterviewQuizBodySchema.safeParse(json.value)
+    if (!body.success) {
       return errorResponse(
         c,
         HttpStatus.BadRequest,
@@ -191,9 +191,10 @@ export function registerInterviewQuizRoutes(
       )
     }
 
+    const { learnerId, ...config } = body.data
     const threadId = crypto.randomUUID()
     await graph.invoke(
-      { threadId, config: config.data },
+      { threadId, learnerId, config },
       graphConfig(threadId, c.req.raw.signal),
     )
 

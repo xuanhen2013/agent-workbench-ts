@@ -21,6 +21,7 @@ import {
   MAX_QUESTION_SIGNAL_SEARCHES,
   QuizPlanner,
   renderForbiddenQuestionStems,
+  renderLearningMemory,
 } from '@/agent/interview-quiz/planning'
 import { OpenAIResponsesExecutor } from '@/clients/openai'
 import {
@@ -295,6 +296,7 @@ function validPlannerInput(): QuizPlannerInput {
     strategy: QuizStrategy.Advance,
     previousQuestionStems: [],
     retrievedChunks: [],
+    memoryContext: { weakKnowledgePoints: [] },
   }
 }
 
@@ -337,6 +339,49 @@ function expectPlannerError(
 }
 
 describe('QuizPlanner', () => {
+  test('长期记忆最多注入八个薄弱点，空记忆不增加上下文块', () => {
+    const weakKnowledgePoints = Array.from(
+      { length: 10 },
+      (_, index) => `weak-${index + 1}`,
+    )
+    const rendered = renderLearningMemory({ weakKnowledgePoints })
+
+    expect(rendered).toContain('<learning_memory>')
+    expect(rendered).toContain('weak-8')
+    expect(rendered).not.toContain('weak-9')
+    expect(renderLearningMemory({ weakKnowledgePoints: [] })).toBe('')
+  })
+
+  test('长期记忆只进入当前 Planner 请求，不进入 continuationItems', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    const draft = createQuizDraft(2)
+    const planner = new QuizPlanner(
+      fakeExecutor(
+        skillTrace(JSON.stringify(draft)),
+        params => requests.push(params),
+      ),
+      plannerOptions(),
+    )
+    const result = await planner.createRound({
+      ...validPlannerInput(),
+      memoryContext: {
+        weakKnowledgePoints: ['memory-only-state', 'memory-only-tool'],
+      },
+    }, { signal: new AbortController().signal })
+
+    expect(result.ok).toBe(true)
+    expect(JSON.stringify(requests[0]?.input)).toContain('<learning_memory>')
+    expect(JSON.stringify(requests[0]?.input)).toContain('memory-only-state')
+    if (result.ok) {
+      expect(JSON.stringify(result.continuationItems))
+        .not
+        .toContain('<learning_memory>')
+      expect(JSON.stringify(result.continuationItems))
+        .not
+        .toContain('memory-only-state')
+    }
+  })
+
   test('历史题干以有界负向列表进入模型，不携带私有题目字段', () => {
     const stems = Array.from(
       { length: MAX_FORBIDDEN_QUESTION_STEMS + 5 },

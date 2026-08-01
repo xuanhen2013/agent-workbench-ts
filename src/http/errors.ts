@@ -31,7 +31,7 @@ export const HttpErrorMessages = {
   [HttpErrorCode.ThreadNotWaiting]: 'The joke thread is not waiting for a review.',
   [HttpErrorCode.InterviewQuizFailed]: 'The interview quiz graph failed.',
   [HttpErrorCode.InterviewQuizSnapshotInconsistent]: 'The graph stopped without an interrupt or terminal state.',
-  [HttpErrorCode.InvalidQuizConfig]: 'initialDifficulty and maxRounds are invalid.',
+  [HttpErrorCode.InvalidQuizConfig]: 'learnerId, initialDifficulty or maxRounds is invalid.',
   [HttpErrorCode.InvalidQuizSubmission]: 'The quiz submission is invalid.',
   [HttpErrorCode.ThreadNotWaitingForAnswers]: 'The quiz thread is not waiting for answers.',
   [HttpErrorCode.ReviewIdMismatch]: 'The reviewId does not match the pending review.',

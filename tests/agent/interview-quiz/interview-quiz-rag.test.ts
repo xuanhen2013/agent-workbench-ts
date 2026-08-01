@@ -14,7 +14,9 @@ import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import {
   createQuizGraphFixture,
   FakeKnowledgeRetriever,
+  FakeLearningMemory,
   FakeQuizPlanner,
+  TEST_LEARNER_ID,
   wrongSubmission,
 } from '../../helpers/quiz'
 
@@ -45,11 +47,13 @@ describe('Interview Quiz Graph RAG', () => {
       planner,
       questionSignalRetriever: knowledgeRetriever,
       questionBank: new InMemoryQuestionBank(),
+      learningMemory: new FakeLearningMemory(),
     })
     const threadId = 'quiz-rag-thread'
 
     await graph.invoke({
       threadId,
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 1,
@@ -77,11 +81,13 @@ describe('Interview Quiz Graph RAG', () => {
         },
       },
       questionBank: new InMemoryQuestionBank(),
+      learningMemory: new FakeLearningMemory(),
     })
     const threadId = 'quiz-rag-no-evidence-thread'
 
     await graph.invoke({
       threadId,
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 1,
@@ -102,11 +108,13 @@ describe('Interview Quiz Graph RAG', () => {
       planner,
       questionSignalRetriever,
       questionBank: new InMemoryQuestionBank(),
+      learningMemory: new FakeLearningMemory(),
     })
     const threadId = 'quiz-rag-split-retriever-thread'
 
     await graph.invoke({
       threadId,
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 1,
@@ -125,6 +133,7 @@ describe('Interview Quiz Graph RAG', () => {
 
     await graph.invoke({
       threadId,
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 2,

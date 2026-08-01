@@ -28,6 +28,11 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .cache
 *.tsbuildinfo
 
+# local SQLite learning memory
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
 # IntelliJ based IDEs
 .idea
 

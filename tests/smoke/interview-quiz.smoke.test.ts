@@ -9,6 +9,7 @@ import {
   QuizRoundResultRequestSchema,
 } from '@/agent/interview-quiz/execution'
 import { createDefaultAppDeps } from '@/composition-root'
+import { TEST_LEARNER_ID } from '../helpers/quiz'
 
 const requiredModelEnvironment = [
   'OPENAI_BASE_URL',
@@ -56,6 +57,7 @@ test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async
 
   await graph.invoke({
     threadId,
+    learnerId: TEST_LEARNER_ID,
     config: {
       initialDifficulty: QuizDifficulty.Foundation,
       maxRounds: 2,

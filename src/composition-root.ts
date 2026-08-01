@@ -2,6 +2,7 @@ import type { AppDeps } from '@/app'
 import type { SourceDocument } from '@/knowledge/contracts'
 import process from 'node:process'
 import { MemorySaver } from '@langchain/langgraph'
+import { Database } from 'bun:sqlite'
 import { createInterruptGraph } from '@/agent/interrupt/interrupt-graph'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import { QuizPlanner } from '@/agent/interview-quiz/planning'
@@ -19,6 +20,7 @@ import {
   InMemoryKnowledgeStore,
 } from '@/knowledge/in-memory-rag'
 import { loadInterviewBankDocuments } from '@/knowledge/interview-bank-loader'
+import { SqliteLearningMemory } from '@/learning-memory/sqlite-learning-memory'
 import { createCloudflareD1QuestionBankFromEnv } from '@/question-bank/cloudflare-d1-question-bank'
 import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import { loadSkillCatalog } from '@/skills/skill-loader'
@@ -96,6 +98,11 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
       signal: new AbortController().signal,
     })
   }
+  const learningMemoryDatabase = new Database(
+    process.env.LEARNING_MEMORY_SQLITE_PATH?.trim()
+    || 'agent-workbench.sqlite',
+  )
+  const learningMemory = new SqliteLearningMemory(learningMemoryDatabase)
 
   const openAIExecutor = createOpenAIResponsesExecutor()
   const jokeGraph = createInterruptGraph({
@@ -111,6 +118,7 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
     }),
     questionSignalRetriever,
     questionBank,
+    learningMemory,
   })
 
   return { interviewQuizGraph, jokeGraph }

@@ -7,6 +7,7 @@ import type {
 } from './contracts'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
 import type { RetrievedChunk } from '@/knowledge/contracts'
+import type { LearningMemoryContext } from '@/learning-memory/contracts'
 import { ReducedValue, StateSchema } from '@langchain/langgraph'
 import { z } from 'zod/v4'
 import { removeKnownGatewayMetadata } from '@/clients/openai'
@@ -28,6 +29,9 @@ export interface QuizRoundContext {
 export const InterviewQuizStateSchema = new StateSchema({
   /** 业务 Thread ID；同时用于生成稳定的 plan/review/question ID。 */
   threadId: z.string().min(1),
+
+  /** 跨 Thread 稳定的学习者身份；HTTP 创建边界只校验一次。 */
+  learnerId: z.string().uuid(),
 
   /** Web 创建 Thread 时提交，题目范围固定为 Agent 工程。 */
   config: QuizConfigSchema,
@@ -65,6 +69,11 @@ export const InterviewQuizStateSchema = new StateSchema({
 
   /** QuestionBank 为当前轮返回的有限历史题干；不包含答案和完整题库。 */
   questionBankStems: z.array(z.string()).default(() => []),
+
+  /** 启动时从 SQL 聚合出的有界长期记忆，不保存完整 attempts。 */
+  memoryContext: z.custom<LearningMemoryContext>().default(() => ({
+    weakKnowledgePoints: [],
+  })),
 
   /** 已完成轮次。verify 每次只返回一个新元素，由 Reducer 追加。 */
   rounds: new ReducedValue(

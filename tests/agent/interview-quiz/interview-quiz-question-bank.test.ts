@@ -16,8 +16,10 @@ import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-
 import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
 import {
   FakeKnowledgeRetriever,
+  FakeLearningMemory,
   FakeQuizPlanner,
   materializeTestPlan,
+  TEST_LEARNER_ID,
 } from '../../helpers/quiz'
 
 function config(threadId: string) {
@@ -65,6 +67,7 @@ function createGraph(questionBank: QuestionBank, planner = new FakeQuizPlanner()
       planner,
       questionSignalRetriever: new FakeKnowledgeRetriever(),
       questionBank,
+      learningMemory: new FakeLearningMemory(),
     }),
   }
 }
@@ -82,6 +85,7 @@ describe('Interview Quiz Graph QuestionBank', () => {
 
     await graph.invoke({
       threadId,
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 1,
@@ -124,6 +128,7 @@ describe('Interview Quiz Graph QuestionBank', () => {
     const read = createGraph(readFailure).graph
     await read.invoke({
       threadId: 'question-bank-read-failure',
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 1,
@@ -142,6 +147,7 @@ describe('Interview Quiz Graph QuestionBank', () => {
     const save = createGraph(saveFailure).graph
     await save.invoke({
       threadId: 'question-bank-save-failure',
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 1,

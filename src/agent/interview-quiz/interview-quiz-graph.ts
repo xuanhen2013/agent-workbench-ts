@@ -1,7 +1,15 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph'
+import type { Result } from 'neverthrow'
+import type { QuizRoundRecord } from './contracts'
+import type { InterviewQuizError } from './errors'
 import type { QuizPlanner } from './planning'
 import type { OpenAIResponseInputItem } from '@/clients/openai'
 import type { KnowledgeRetriever } from '@/knowledge/contracts'
+import type {
+  LearningMemory,
+  LearningMemoryContext,
+  RoundAttemptInput,
+} from '@/learning-memory/contracts'
 import type { QuestionBank } from '@/question-bank/contracts'
 import {
   END,
@@ -9,6 +17,7 @@ import {
   START,
   StateGraph,
 } from '@langchain/langgraph'
+import { err, ok } from 'neverthrow'
 import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
 import {
   InterviewQuizStatus,
@@ -37,6 +46,8 @@ export interface CreateInterviewQuizGraphOptions {
   questionSignalRetriever: Pick<KnowledgeRetriever, 'search'>
   /** Graph 确定性读写正式题库，不把它暴露为模型 Tool。 */
   questionBank: QuestionBank
+  /** 跨 Session 作答事实；Graph 不知道 SQLite 或 D1 的实现细节。 */
+  learningMemory: Pick<LearningMemory, 'loadContext' | 'recordRound'>
 }
 
 function raiseDifficulty(difficulty: QuizDifficulty) {
@@ -84,17 +95,71 @@ function buildKnowledgeQuery(state: {
     strategy: QuizStrategy
   } | null
   rounds: Array<{ result: { wrongKnowledgePoints: string[] } }>
+  memoryContext: LearningMemoryContext
 }) {
-  const wrongKnowledgePoints = state.roundContext?.strategy
+  const focusKnowledgePoints = state.roundContext?.strategy
     === QuizStrategy.Remediate
     ? state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []
-    : []
-  const focus = wrongKnowledgePoints.length > 0
-    ? wrongKnowledgePoints.join(' ')
+    : state.memoryContext.weakKnowledgePoints
+  const focus = focusKnowledgePoints.length > 0
+    ? focusKnowledgePoints.join(' ')
     : 'Agent 工程 Tool Calling LangGraph Context Memory'
   const difficulty = state.roundContext?.difficulty ?? QuizDifficulty.Foundation
 
   return `${difficulty} ${focus} 核心概念 常见误区`
+}
+
+/**
+ * Graph State → SQL 契约的显式投影。
+ * LearningMemory 不接收完整 Plan、History、RAG Chunk 或模型 usage。
+ */
+export function toRoundAttemptInput(input: {
+  learnerId: string
+  threadId: string
+  record: QuizRoundRecord
+  completedAt: string
+}): Result<RoundAttemptInput, InterviewQuizError> {
+  const { learnerId, threadId, record, completedAt } = input
+  const resultByQuestionId = new Map(
+    record.result.questionResults.map(result => [result.questionId, result]),
+  )
+  if (
+    resultByQuestionId.size !== record.result.questionResults.length
+    || record.plan.questions.length !== record.result.questionResults.length
+  ) {
+    return err(createInterviewQuizError(
+      InterviewQuizErrorCode.MemoryAttemptInvalid,
+    ))
+  }
+
+  const questions: RoundAttemptInput['questions'] = []
+  for (const question of record.plan.questions) {
+    const result = resultByQuestionId.get(question.questionId)
+    if (!result || !question.bankQuestionId) {
+      return err(createInterviewQuizError(
+        InterviewQuizErrorCode.MemoryAttemptInvalid,
+      ))
+    }
+
+    questions.push({
+      questionId: question.questionId,
+      bankQuestionId: question.bankQuestionId,
+      knowledgePoint: question.knowledgePoint,
+      selectedOptionIds: [...result.selectedOptionIds],
+      isCorrect: result.isCorrect,
+    })
+  }
+
+  return ok({
+    learnerId,
+    threadId,
+    round: record.plan.round,
+    difficulty: record.plan.difficulty,
+    correctCount: record.result.correctCount,
+    total: questions.length,
+    completedAt,
+    questions,
+  })
 }
 
 /**
@@ -120,6 +185,25 @@ export function createInterviewQuizGraph(
         status: InterviewQuizStatus.Planning,
       }
     })
+    .addNode('load_memory', async (state, { signal }) => {
+      try {
+        return {
+          memoryContext: await options.learningMemory.loadContext(
+            state.learnerId,
+            { signal },
+          ),
+          status: InterviewQuizStatus.Planning,
+        }
+      }
+      catch {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.LearningMemoryLoadFailed,
+          ),
+        }
+      }
+    })
     .addNode('load_question_history', async (state, { signal }) => {
       if (!state.roundContext) {
         return {
@@ -130,16 +214,16 @@ export function createInterviewQuizGraph(
         }
       }
 
-      const wrongKnowledgePoints = state.roundContext.strategy
+      const focusKnowledgePoints = state.roundContext.strategy
         === QuizStrategy.Remediate
         ? state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []
-        : []
+        : state.memoryContext.weakKnowledgePoints
 
       try {
         return {
           questionBankStems: await options.questionBank.findRecentStems({
             difficulty: state.roundContext.difficulty,
-            knowledgePoints: wrongKnowledgePoints,
+            knowledgePoints: focusKnowledgePoints,
             limit: 30,
             signal,
           }),
@@ -211,6 +295,7 @@ export function createInterviewQuizGraph(
           ...state.questionBankStems,
         ])].slice(0, MAX_FORBIDDEN_QUESTION_STEMS),
         retrievedChunks: state.retrievedChunks,
+        memoryContext: state.memoryContext,
       }
 
       try {
@@ -331,6 +416,43 @@ export function createInterviewQuizGraph(
         status: InterviewQuizStatus.WaitingForNextRound,
       }
     })
+    .addNode('persist_memory', async (state, { signal }) => {
+      const record = state.rounds.at(-1)
+      if (!record) {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundResultMissing,
+          ),
+        }
+      }
+
+      const attempt = toRoundAttemptInput({
+        learnerId: state.learnerId,
+        threadId: state.threadId,
+        record,
+        completedAt: new Date().toISOString(),
+      })
+      if (attempt.isErr()) {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: attempt.error,
+        }
+      }
+
+      try {
+        await options.learningMemory.recordRound(attempt.value, { signal })
+        return { status: InterviewQuizStatus.WaitingForNextRound }
+      }
+      catch {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.LearningMemorySaveFailed,
+          ),
+        }
+      }
+    })
     .addNode('wait_next_round', (state) => {
       const lastRound = state.rounds.at(-1)
       if (!lastRound) {
@@ -401,7 +523,12 @@ export function createInterviewQuizGraph(
       completionReason: QuizCompletionReason.MaxRounds,
     }))
     .addEdge(START, 'initialize')
-    .addEdge('initialize', 'load_question_history')
+    .addEdge('initialize', 'load_memory')
+    .addConditionalEdges('load_memory', state => (
+      state.status === InterviewQuizStatus.Failed
+        ? END
+        : 'load_question_history'
+    ))
     .addConditionalEdges('load_question_history', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
@@ -425,10 +552,12 @@ export function createInterviewQuizGraph(
         ? END
         : 'verify'
     ))
-    .addConditionalEdges('verify', (state) => {
+    .addConditionalEdges('verify', state => (
+      state.status === InterviewQuizStatus.Failed ? END : 'persist_memory'
+    ))
+    .addConditionalEdges('persist_memory', (state) => {
       if (state.status === InterviewQuizStatus.Failed)
         return END
-
       return state.rounds.length >= state.config.maxRounds
         ? 'finish'
         : 'wait_next_round'

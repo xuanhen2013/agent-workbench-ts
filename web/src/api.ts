@@ -129,11 +129,13 @@ export interface InterviewQuizView {
   error?: { code: string, message: string }
 }
 
-export function createInterviewQuiz(config: QuizConfig) {
+export function createInterviewQuiz(
+  input: QuizConfig & { learnerId: string },
+) {
   return request<InterviewQuizView>('/api/interview-quiz', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(config),
+    body: JSON.stringify(input),
   })
 }
 

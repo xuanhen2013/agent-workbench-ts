@@ -12,6 +12,11 @@ import type {
   OpenAIResponsesExecutor,
 } from '@/clients/openai'
 import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
+import type {
+  LearningMemory,
+  LearningMemoryContext,
+  RoundAttemptInput,
+} from '@/learning-memory/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import {
   QuestionType,
@@ -25,6 +30,8 @@ import {
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
 import { InMemoryQuestionBank } from '@/question-bank/in-memory-question-bank'
+
+export const TEST_LEARNER_ID = '00000000-0000-4000-8000-000000000001'
 
 export function createQuizDraft(
   round = 1,
@@ -198,17 +205,61 @@ export class FakeKnowledgeRetriever {
   }
 }
 
-export function createQuizGraphFixture() {
+export class FakeLearningMemory implements LearningMemory {
+  readonly attempts: RoundAttemptInput[] = []
+  loadCalls = 0
+  recordCalls = 0
+
+  constructor(
+    readonly context: LearningMemoryContext = { weakKnowledgePoints: [] },
+  ) {}
+
+  async recordRound(
+    input: RoundAttemptInput,
+    options: { signal: AbortSignal },
+  ) {
+    options.signal.throwIfAborted()
+    this.recordCalls += 1
+    this.attempts.push(structuredClone(input))
+    return { inserted: true }
+  }
+
+  async listTopicMastery() {
+    return []
+  }
+
+  async loadContext(
+    _learnerId: string,
+    options: { signal: AbortSignal },
+  ) {
+    options.signal.throwIfAborted()
+    this.loadCalls += 1
+    return structuredClone(this.context)
+  }
+}
+
+export function createQuizGraphFixture(options: {
+  learningMemory?: LearningMemory
+  checkpointer?: MemorySaver
+} = {}) {
   const planner = new FakeQuizPlanner()
   const knowledgeRetriever = new FakeKnowledgeRetriever()
   const questionBank = new InMemoryQuestionBank()
+  const learningMemory = options.learningMemory ?? new FakeLearningMemory()
   const graph = createInterviewQuizGraph({
-    checkpointer: new MemorySaver(),
+    checkpointer: options.checkpointer ?? new MemorySaver(),
     planner,
     questionSignalRetriever: knowledgeRetriever,
     questionBank,
+    learningMemory,
   })
-  return { graph, planner, knowledgeRetriever, questionBank }
+  return {
+    graph,
+    planner,
+    knowledgeRetriever,
+    questionBank,
+    learningMemory,
+  }
 }
 
 export function correctSubmission(request: QuizRoundRequest) {
@@ -249,6 +300,7 @@ export function materializeTestPlan(input: {
     strategy: QuizStrategy.Initial,
     previousQuestionStems: [],
     retrievedChunks: [],
+    memoryContext: { weakKnowledgePoints: [] },
   }
 
   return planner.materializeRoundPlan({

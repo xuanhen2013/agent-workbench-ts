@@ -14,6 +14,7 @@ import {
 import {
   correctSubmission,
   createQuizGraphFixture,
+  TEST_LEARNER_ID,
   wrongSubmission,
 } from '../../helpers/quiz'
 
@@ -45,6 +46,7 @@ describe('Interview Quiz Graph', () => {
 
     await graph.invoke({
       threadId,
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 2,
@@ -129,6 +131,7 @@ describe('Interview Quiz Graph', () => {
 
     await graph.invoke({
       threadId,
+      learnerId: TEST_LEARNER_ID,
       config: {
         initialDifficulty: QuizDifficulty.Foundation,
         maxRounds: 2,

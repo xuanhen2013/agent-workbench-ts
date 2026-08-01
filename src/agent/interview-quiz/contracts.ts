@@ -36,6 +36,11 @@ export const QuizConfigSchema = z.object({
   maxRounds: z.number().int().min(1).max(3),
 }).strict()
 
+/** 创建新 Thread 的 HTTP Body；learnerId 是跨 Session 的 Demo 身份。 */
+export const CreateInterviewQuizBodySchema = QuizConfigSchema.extend({
+  learnerId: z.string().uuid(),
+}).strict()
+
 export const QuizOptionSchema = z.object({
   optionId: z.string().regex(/^[A-F]$/),
   text: z.string().trim().min(1).max(300),

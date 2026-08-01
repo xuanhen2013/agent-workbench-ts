@@ -140,6 +140,7 @@ export function InterviewQuizDemo() {
     setError(undefined)
     try {
       const created = await createInterviewQuiz({
+        learnerId: getDemoLearnerId(),
         initialDifficulty: difficulty,
         maxRounds,
       })
@@ -375,4 +376,15 @@ export function InterviewQuizDemo() {
       )}
     </main>
   )
+}
+
+function getDemoLearnerId(): string {
+  const key = 'agent-workbench:quiz-learner-id'
+  const existing = localStorage.getItem(key)
+  if (existing)
+    return existing
+
+  const created = crypto.randomUUID()
+  localStorage.setItem(key, created)
+  return created
 }

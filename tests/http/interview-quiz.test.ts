@@ -5,6 +5,7 @@ import { createJokeGraphFixture } from '../helpers/joke'
 import {
   correctSubmission,
   createQuizGraphFixture,
+  TEST_LEARNER_ID,
   wrongSubmission,
 } from '../helpers/quiz'
 
@@ -30,6 +31,7 @@ describe('Interview Quiz API', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        learnerId: TEST_LEARNER_ID,
         initialDifficulty: 'foundation',
         maxRounds: 2,
       }),
@@ -118,6 +120,7 @@ describe('Interview Quiz API', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        learnerId: TEST_LEARNER_ID,
         initialDifficulty: 'foundation',
         maxRounds: 1,
       }),
