@@ -26,7 +26,90 @@ async function responseBody(response: Response) {
   return await response.json() as InterviewQuizView
 }
 
+function parseSse(text: string) {
+  return text.trim().split(/\n\n/).map((block) => {
+    const event = block.match(/^event: (.+)$/m)?.[1]
+    const data = block.match(/^data: (.+)$/m)?.[1]
+    return {
+      event,
+      data: data ? JSON.parse(data) as unknown : undefined,
+    }
+  })
+}
+
 describe('Interview Quiz API', () => {
+  test('SSE 创建会话只发送白名单进度和最终安全视图', async () => {
+    const { app } = createFixture()
+    const response = await app.request('/api/interview-quiz/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        learnerId: TEST_LEARNER_ID,
+        initialDifficulty: 'foundation',
+        maxRounds: 1,
+      }),
+    })
+    const events = parseSse(await response.text())
+    const done = events.find(event => event.event === 'done')
+    const progress = events
+      .filter(event => event.event === 'progress')
+      .map(event => event.data as { phase: string, label: string })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/event-stream')
+    expect(progress.some(event => event.phase === 'generating_category')).toBe(true)
+    expect(progress.some(event => event.phase === 'waiting_for_answers')).toBe(true)
+    expect(done?.data).toMatchObject({ status: 'needs_answers' })
+    expect(JSON.stringify(events)).not.toContain('correctOptionIds')
+    expect(JSON.stringify(events)).not.toContain('explanation')
+  })
+
+  test('SSE 下一轮复用同一 thread，并返回新的分类进度', async () => {
+    const { app } = createFixture()
+    const created = parseSse(await (await app.request('/api/interview-quiz/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        learnerId: TEST_LEARNER_ID,
+        initialDifficulty: 'foundation',
+        maxRounds: 2,
+      }),
+    })).text()).find(event => event.event === 'done')?.data as InterviewQuizView
+    const questions = created.waitingQuestions
+    if (!questions)
+      throw new Error('Expected SSE round questions.')
+
+    const result = await app.request(`/api/interview-quiz/${created.threadId}/answers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(wrongSubmission(questions)),
+    })
+    const resultView = await responseBody(result)
+    if (!resultView.waitingResult)
+      throw new Error('Expected SSE next-round review.')
+
+    const nextResponse = await app.request(
+      `/api/interview-quiz/${created.threadId}/next/stream`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          reviewId: resultView.waitingResult.reviewId,
+          action: 'next_round',
+        }),
+      },
+    )
+    const nextEvents = parseSse(await nextResponse.text())
+    const nextProgress = nextEvents
+      .filter(event => event.event === 'progress')
+      .map(event => event.data as { phase: string })
+    const nextDone = nextEvents.find(event => event.event === 'done')
+
+    expect(nextResponse.status).toBe(200)
+    expect(nextProgress.some(event => event.phase === 'replanning')).toBe(true)
+    expect((nextDone?.data as InterviewQuizView).status).toBe('needs_answers')
+  })
+
   test('创建、答题、查看结果、下一轮和最终完成形成完整闭环', async () => {
     const { app, planner } = createFixture()
     const createdResponse = await app.request('/api/interview-quiz', {

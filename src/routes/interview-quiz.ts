@@ -9,6 +9,7 @@ import type { InterviewQuizState } from '@/agent/interview-quiz/state'
 import type { AppEnv } from '@/http'
 import type { HttpStatusCode } from '@/http/errors'
 import { Command } from '@langchain/langgraph'
+import { streamSSE } from 'hono/streaming'
 import {
   CreateInterviewQuizBodySchema,
   InterviewQuizStatus,
@@ -70,6 +71,107 @@ function errorResponse(
     status: 'failed' as const,
     error,
   }, status)
+}
+
+interface StreamTaskPayload {
+  name?: unknown
+  input?: unknown
+  result?: unknown
+}
+
+interface QuizProgressEvent {
+  phase: string
+  label: string
+  categoryIndex?: number
+  categoryCount?: number
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function mapTaskProgress(payload: StreamTaskPayload): QuizProgressEvent | undefined {
+  if (typeof payload.name !== 'string' || payload.result !== undefined)
+    return undefined
+
+  if (payload.name === 'planning' && isRecord(payload.input)) {
+    const cursor = payload.input.categoryCursor
+    const categories = payload.input.activeCategories
+    if (typeof cursor === 'number' && Array.isArray(categories)) {
+      return {
+        phase: 'generating_category',
+        label: `正在生成第 ${cursor + 1} / ${categories.length} 个分类的题目`,
+        categoryIndex: cursor + 1,
+        categoryCount: categories.length,
+      }
+    }
+  }
+
+  const progress: Record<string, QuizProgressEvent> = {
+    initialize: { phase: 'initializing', label: '正在初始化训练会话' },
+    load_memory: { phase: 'loading_memory', label: '正在加载历史薄弱点' },
+    load_jd_context: { phase: 'loading_jd', label: '正在加载 JD 重点' },
+    select_categories: { phase: 'selecting_categories', label: '正在确定题目分类' },
+    collect_section: { phase: 'collecting_questions', label: '正在整理分类题目' },
+    persist_questions: { phase: 'saving_questions', label: '正在保存题目' },
+    answer_questions: { phase: 'waiting_for_answers', label: '题目已准备好，等待答题' },
+    verify: { phase: 'grading', label: '正在确定性判分' },
+    persist_memory: { phase: 'saving_memory', label: '正在保存本轮学习记录' },
+    replan: { phase: 'replanning', label: '正在根据错题重新规划' },
+    wait_next_round: { phase: 'waiting_for_next_round', label: '等待开始下一轮' },
+    finish: { phase: 'completed', label: '训练已完成' },
+  }
+  return progress[payload.name]
+}
+
+async function streamInterviewQuizRun(
+  c: Context<AppEnv>,
+  graph: InterviewQuizGraph,
+  threadId: string,
+  input: Parameters<InterviewQuizGraph['stream']>[0],
+) {
+  return streamSSE(c, async (stream) => {
+    let eventId = 0
+    const send = async (event: string, data: unknown) => {
+      await stream.writeSSE({
+        id: String(++eventId),
+        event,
+        data: JSON.stringify(data),
+      })
+    }
+
+    await send('progress', {
+      phase: 'initializing',
+      label: '正在启动 Agent',
+    } satisfies QuizProgressEvent)
+
+    try {
+      const graphStream = await graph.stream(input, {
+        ...graphConfig(threadId, c.req.raw.signal),
+        streamMode: ['tasks', 'updates'],
+      })
+      for await (const rawEvent of graphStream) {
+        if (!Array.isArray(rawEvent) || rawEvent.length !== 2)
+          continue
+        const [mode, payload] = rawEvent as [unknown, unknown]
+        if (mode !== 'tasks' || !isRecord(payload))
+          continue
+        const progress = mapTaskProgress(payload as StreamTaskPayload)
+        if (progress)
+          await send('progress', progress)
+      }
+
+      const projected = await projectInterviewQuiz(graph, threadId)
+      if (!projected.ok) {
+        await send('error', projected.error)
+        return
+      }
+      await send('done', projected.view)
+    }
+    catch {
+      await send('error', createHttpError(HttpErrorCode.InterviewQuizFailed))
+    }
+  })
 }
 
 async function readJson(c: Context<AppEnv>) {
@@ -259,6 +361,31 @@ export function registerInterviewQuizRoutes(
     }
   })
 
+  /** 创建训练会话的 SSE 版本；JSON 版本保留给非流式调用方。 */
+  app.post('/api/interview-quiz/stream', async (c) => {
+    const json = await readJson(c)
+    if (!json.ok)
+      return errorResponse(c, HttpStatus.BadRequest, json.error)
+
+    const body = CreateInterviewQuizBodySchema.safeParse(json.value)
+    if (!body.success) {
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidQuizConfig),
+      )
+    }
+
+    const { learnerId, ...config } = body.data
+    const threadId = crypto.randomUUID()
+    return streamInterviewQuizRun(
+      c,
+      graph,
+      threadId,
+      { threadId, learnerId, config },
+    )
+  })
+
   app.post('/api/interview-quiz', async (c) => {
     const json = await readJson(c)
     if (!json.ok)
@@ -391,5 +518,50 @@ export function registerInterviewQuizRoutes(
     return projected.ok
       ? c.json(projected.view, 200)
       : errorResponse(c, projected.status, projected.error)
+  })
+
+  /** 下一轮的 SSE 版本；判分仍使用上面的 JSON 接口。 */
+  app.post('/api/interview-quiz/:threadId/next/stream', async (c) => {
+    const json = await readJson(c)
+    if (!json.ok)
+      return errorResponse(c, HttpStatus.BadRequest, json.error)
+
+    const decision = QuizNextRoundDecisionSchema.safeParse(json.value)
+    if (!decision.success) {
+      return errorResponse(
+        c,
+        HttpStatus.BadRequest,
+        createHttpError(HttpErrorCode.InvalidNextRoundDecision),
+      )
+    }
+
+    const threadId = c.req.param('threadId')
+    const before = await projectInterviewQuiz(graph, threadId)
+    if (!before.ok)
+      return errorResponse(c, before.status, before.error)
+
+    if (!before.view.waitingResult) {
+      return errorResponse(
+        c,
+        HttpStatus.Conflict,
+        createHttpError(HttpErrorCode.ThreadNotWaitingForNextRound),
+      )
+    }
+
+    if (before.view.waitingResult.reviewId !== decision.data.reviewId) {
+      return errorResponse(c, HttpStatus.Conflict, createHttpError(HttpErrorCode.ReviewIdMismatch))
+    }
+
+    return streamInterviewQuizRun(
+      c,
+      graph,
+      threadId,
+      new Command({
+        resume: {
+          reviewId: decision.data.reviewId,
+          action: QuizNextRoundAction.NextRound,
+        },
+      }),
+    )
   })
 }

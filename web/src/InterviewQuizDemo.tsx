@@ -3,13 +3,14 @@ import type {
   MarketJdCard,
   PublicQuizRoundResult,
   QuizDifficulty,
+  QuizProgressEvent,
   SelectedJdReference,
 } from './api'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
 import {
-  continueInterviewQuiz,
-  createInterviewQuiz,
+  continueInterviewQuizStream,
+  createInterviewQuizStream,
   getInterviewQuiz,
   importInterviewJd,
   searchMarketJds,
@@ -50,20 +51,28 @@ function RoundResultCard({ result }: { result: PublicQuizRoundResult }) {
       </div>
 
       <div className="quiz-result-list">
-        {result.questionResults.map((question, index) => (
-          <div
-            className={`quiz-question-result ${question.isCorrect ? 'correct' : 'wrong'}`}
-            key={question.questionId}
-          >
-            <strong>{`${index + 1}. ${question.stem}`}</strong>
-            <span>{question.isCorrect ? '答对' : '答错'}</span>
-            <small>
-              你的选择：
-              {' '}
-              {question.selectedOptions
-                .map(option => `${option.optionId}. ${option.text}`)
-                .join('、')}
-            </small>
+        {result.sectionResults.map(section => (
+          <div className="quiz-section-result" key={section.category.categoryId}>
+            <div className="row section-heading">
+              <strong>{section.category.name}</strong>
+              <span>{`${section.correctCount} / ${section.total}`}</span>
+            </div>
+            {section.questionResults.map((question, index) => (
+              <div
+                className={`quiz-question-result ${question.isCorrect ? 'correct' : 'wrong'}`}
+                key={question.questionId}
+              >
+                <strong>{`${index + 1}. ${question.stem}`}</strong>
+                <span>{question.isCorrect ? '答对' : '答错'}</span>
+                <small>
+                  你的选择：
+                  {' '}
+                  {question.selectedOptions
+                    .map(option => `${option.optionId}. ${option.text}`)
+                    .join('、')}
+                </small>
+              </div>
+            ))}
           </div>
         ))}
       </div>
@@ -125,6 +134,7 @@ export function InterviewQuizDemo() {
   const [answers, setAnswers] = useState<Record<string, string[]>>({})
   const [showSummary, setShowSummary] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [progress, setProgress] = useState<QuizProgressEvent>()
   const [error, setError] = useState<string>()
 
   useEffect(() => {
@@ -144,7 +154,7 @@ export function InterviewQuizDemo() {
   }, [view?.waitingQuestions?.reviewId])
 
   const allAnswered = useMemo(() => {
-    const questions = view?.waitingQuestions?.questions ?? []
+    const questions = view?.waitingQuestions?.sections.flatMap(section => section.questions) ?? []
     return questions.length > 0
       && questions.every(question => answers[question.questionId]?.length)
   }, [answers, view?.waitingQuestions])
@@ -152,13 +162,14 @@ export function InterviewQuizDemo() {
   async function start() {
     setLoading(true)
     setError(undefined)
+    setProgress({ phase: 'initializing', label: '正在启动 Agent' })
     try {
-      const created = await createInterviewQuiz({
+      const created = await createInterviewQuizStream({
         learnerId: getDemoLearnerId(),
         initialDifficulty: difficulty,
         maxRounds,
         ...(selectedJd ? { selectedJd } : {}),
-      })
+      }, setProgress)
       setView(created)
       await navigate({
         replace: true,
@@ -170,6 +181,7 @@ export function InterviewQuizDemo() {
     }
     finally {
       setLoading(false)
+      setProgress(undefined)
     }
   }
 
@@ -244,10 +256,11 @@ export function InterviewQuizDemo() {
     setLoading(true)
     setError(undefined)
     try {
+      const questions = round.sections.flatMap(section => section.questions)
       const nextView = await submitInterviewQuizAnswers(
         view.threadId,
         round.reviewId,
-        round.questions.map(question => ({
+        questions.map(question => ({
           questionId: question.questionId,
           selectedOptionIds: answers[question.questionId] ?? [],
         })),
@@ -268,10 +281,12 @@ export function InterviewQuizDemo() {
 
     setLoading(true)
     setError(undefined)
+    setProgress({ phase: 'initializing', label: '正在启动下一轮' })
     try {
-      setView(await continueInterviewQuiz(
+      setView(await continueInterviewQuizStream(
         view.threadId,
         view.waitingResult.reviewId,
+        setProgress,
       ))
     }
     catch (error) {
@@ -279,6 +294,7 @@ export function InterviewQuizDemo() {
     }
     finally {
       setLoading(false)
+      setProgress(undefined)
     }
   }
 
@@ -287,6 +303,7 @@ export function InterviewQuizDemo() {
     setAnswers({})
     setShowSummary(false)
     setError(undefined)
+    setProgress(undefined)
     setJdTitle('')
     setJdContent('')
     setMarketQuery('Agent 前端')
@@ -313,7 +330,7 @@ export function InterviewQuizDemo() {
           <div>
             <p className="eyebrow">QUIZ CONFIG</p>
             <h2>开始 Agent 工程面试训练</h2>
-            <p>每轮固定五题，包含单选和多选。</p>
+            <p>每个分类五题，最多三个分类，包含单选和多选。</p>
           </div>
           <div className="market-jd-picker">
             <label className="quiz-jd-field">
@@ -439,7 +456,7 @@ export function InterviewQuizDemo() {
         </section>
       )}
 
-      {loading && <p className="notice">Agent 正在处理…</p>}
+      {loading && <p className="notice">{progress?.label ?? 'Agent 正在处理…'}</p>}
       {error && <p className="notice error">{error}</p>}
 
       {view?.waitingQuestions && !showSummary && (
@@ -453,31 +470,39 @@ export function InterviewQuizDemo() {
           </div>
 
           <div className="quiz-questions">
-            {view.waitingQuestions.questions.map((question, index) => (
-              <fieldset className="quiz-question" key={question.questionId}>
-                <legend>{`${index + 1}. ${question.stem}`}</legend>
-                <p className="question-meta">
-                  {question.type === 'multiple' ? '多选题' : '单选题'}
-                  {' · '}
-                  {question.knowledgePoint}
-                </p>
-                {question.options.map(option => (
-                  <label className="quiz-option" key={option.optionId}>
-                    <input
-                      checked={(answers[question.questionId] ?? [])
-                        .includes(option.optionId)}
-                      name={question.questionId}
-                      type={question.type === 'multiple' ? 'checkbox' : 'radio'}
-                      onChange={() => selectOption(
-                        question.questionId,
-                        option.optionId,
-                        question.type === 'multiple',
-                      )}
-                    />
-                    <span>{`${option.optionId}. ${option.text}`}</span>
-                  </label>
+            {view.waitingQuestions.sections.map(section => (
+              <div className="quiz-section" key={section.category.categoryId}>
+                <div className="quiz-section-title">
+                  <h3>{section.category.name}</h3>
+                  <span>{section.category.knowledgePoints.join(' · ')}</span>
+                </div>
+                {section.questions.map((question, index) => (
+                  <fieldset className="quiz-question" key={question.questionId}>
+                    <legend>{`${index + 1}. ${question.stem}`}</legend>
+                    <p className="question-meta">
+                      {question.type === 'multiple' ? '多选题' : '单选题'}
+                      {' · '}
+                      {question.knowledgePoint}
+                    </p>
+                    {question.options.map(option => (
+                      <label className="quiz-option" key={option.optionId}>
+                        <input
+                          checked={(answers[question.questionId] ?? [])
+                            .includes(option.optionId)}
+                          name={question.questionId}
+                          type={question.type === 'multiple' ? 'checkbox' : 'radio'}
+                          onChange={() => selectOption(
+                            question.questionId,
+                            option.optionId,
+                            question.type === 'multiple',
+                          )}
+                        />
+                        <span>{`${option.optionId}. ${option.text}`}</span>
+                      </label>
+                    ))}
+                  </fieldset>
                 ))}
-              </fieldset>
+              </div>
             ))}
           </div>
 

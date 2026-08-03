@@ -60,6 +60,8 @@ export function resumeJoke(
 export type QuizDifficulty = 'foundation' | 'intermediate' | 'advanced'
 export type QuizStrategy = 'initial' | 'advance' | 'remediate'
 export type QuizQuestionType = 'single' | 'multiple'
+export type QuizCategoryId
+  = 'orchestration' | 'tooling' | 'knowledge' | 'reliability'
 
 export type SelectedJdReference
   = | { source: 'user_upload', documentId: string }
@@ -76,6 +78,12 @@ export interface QuizOption {
   text: string
 }
 
+export interface QuizCategory {
+  categoryId: QuizCategoryId
+  name: string
+  knowledgePoints: string[]
+}
+
 export interface QuizQuestion {
   questionId: string
   type: QuizQuestionType
@@ -85,23 +93,43 @@ export interface QuizQuestion {
   options: QuizOption[]
 }
 
+export interface QuizSection {
+  category: QuizCategory
+  questions: QuizQuestion[]
+}
+
 export interface QuizRoundRequest {
   kind: 'interview_quiz_round'
   reviewId: string
   round: number
   difficulty: QuizDifficulty
-  questionCount: 5
-  questions: QuizQuestion[]
+  questionCount: number
+  sections: QuizSection[]
 }
 
 export interface PublicQuizRoundResult {
   round: number
   difficulty: QuizDifficulty
   strategy: QuizStrategy
-  total: 5
+  total: number
   correctCount: number
   allCorrect: boolean
   wrongKnowledgePoints: string[]
+  sectionResults: Array<{
+    category: QuizCategory
+    total: number
+    correctCount: number
+    allCorrect: boolean
+    questionResults: Array<{
+      questionId: string
+      type: QuizQuestionType
+      topic: string
+      knowledgePoint: string
+      stem: string
+      selectedOptions: QuizOption[]
+      isCorrect: boolean
+    }>
+  }>
   questionResults: Array<{
     questionId: string
     type: QuizQuestionType
@@ -149,6 +177,84 @@ export interface MarketJdCard {
   highlights: string[]
 }
 
+export interface QuizProgressEvent {
+  phase: string
+  label: string
+  categoryIndex?: number
+  categoryCount?: number
+}
+
+/**
+ * 浏览器只解析三种服务端事件：进度、最终安全视图和稳定错误。
+ * 原始 Graph State 永远不进入这个 DTO。
+ */
+async function streamRequest(
+  url: string,
+  init: RequestInit,
+  onProgress: (event: QuizProgressEvent) => void,
+): Promise<InterviewQuizView> {
+  const response = await fetch(url, init)
+  if (!response.ok) {
+    const body = await response.json() as {
+      error?: { message?: string }
+    }
+    throw new Error(body.error?.message ?? `HTTP ${response.status}`)
+  }
+  if (!response.body)
+    throw new Error('The server did not return an SSE stream.')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: InterviewQuizView | undefined
+
+  const consume = (block: string) => {
+    let event = 'message'
+    const data: string[] = []
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:'))
+        event = line.slice(6).trim()
+      else if (line.startsWith('data:'))
+        data.push(line.slice(5).trimStart())
+    }
+    if (data.length === 0)
+      return
+
+    const payload = JSON.parse(data.join('\n')) as unknown
+    if (event === 'progress') {
+      onProgress(payload as QuizProgressEvent)
+    }
+    else if (event === 'done') {
+      result = payload as InterviewQuizView
+    }
+    else if (event === 'error') {
+      const error = payload as { message?: string }
+      throw new Error(error.message ?? 'The interview quiz stream failed.')
+    }
+  }
+
+  while (true) {
+    const chunk = await reader.read()
+    buffer += decoder.decode(chunk.value ?? new Uint8Array(), {
+      stream: !chunk.done,
+    })
+    let separator = buffer.indexOf('\n\n')
+    while (separator >= 0) {
+      consume(buffer.slice(0, separator))
+      buffer = buffer.slice(separator + 2)
+      separator = buffer.indexOf('\n\n')
+    }
+    if (chunk.done)
+      break
+  }
+  if (buffer.trim())
+    consume(buffer)
+
+  if (!result)
+    throw new Error('The interview quiz stream ended without a result.')
+  return result
+}
+
 export function searchMarketJds(query: string) {
   const search = new URLSearchParams({ query })
   return request<{ items: MarketJdCard[] }>(
@@ -176,6 +282,17 @@ export function createInterviewQuiz(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export function createInterviewQuizStream(
+  input: QuizConfig & { learnerId: string },
+  onProgress: (event: QuizProgressEvent) => void,
+) {
+  return streamRequest('/api/interview-quiz/stream', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  }, onProgress)
 }
 
 export function getInterviewQuiz(threadId: string) {
@@ -210,5 +327,21 @@ export function continueInterviewQuiz(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ reviewId, action: 'next_round' }),
     },
+  )
+}
+
+export function continueInterviewQuizStream(
+  threadId: string,
+  reviewId: string,
+  onProgress: (event: QuizProgressEvent) => void,
+) {
+  return streamRequest(
+    `/api/interview-quiz/${encodeURIComponent(threadId)}/next/stream`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reviewId, action: 'next_round' }),
+    },
+    onProgress,
   )
 }
