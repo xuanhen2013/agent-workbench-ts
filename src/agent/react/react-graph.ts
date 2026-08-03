@@ -1,9 +1,14 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph'
 import type { ReActModel, ToolChoicePolicy } from './model-adapter'
+import type {
+  ToolLoopToolResult,
+} from '@/agent/tool-loop/contracts'
 import type { OpenAIResponseFunctionTool, OpenAIResponseInputItem } from '@/clients/openai'
 import type { ToolExecutor } from '@/tools/_core'
-import { Command, END, ReducedValue, START, StateGraph, StateSchema } from '@langchain/langgraph'
-import { z } from 'zod'
+import { END, START, StateGraph, StateSchema } from '@langchain/langgraph'
+import { err, ok } from 'neverthrow'
+import { z } from 'zod/v4'
+import { createToolLoopGraph } from '@/agent/tool-loop/graph'
 import { removeKnownGatewayMetadata } from '@/clients/openai'
 import { ReActStatus } from './state'
 
@@ -20,36 +25,121 @@ export interface CreateReActGraphDeps {
   initialToolChoice?: ToolChoicePolicy
 }
 
+interface ReActDomainState {
+  goal: string
+  history: OpenAIResponseInputItem[]
+}
+
+function toObservation(result: ToolLoopToolResult) {
+  return {
+    type: 'function_call_output' as const,
+    call_id: result.callId,
+    output: JSON.stringify(result.ok
+      ? { ok: true, data: result.output }
+      : { ok: false, error: result.error }),
+  }
+}
+
+function getRunId(runtime: { context?: { runId?: string } }): string {
+  const runId = runtime.context?.runId
+  if (runId)
+    return runId
+  throw new Error('runId not found')
+}
+
+function mapLoopError(error: { code: string, message: string }) {
+  if (error.code === 'model_call_failed') {
+    return {
+      code: 'call_model_node_error',
+      message: 'Model call failed.',
+    }
+  }
+
+  return {
+    code: error.code,
+    message: error.message,
+  }
+}
+
 export function createReActGraph(
   deps: CreateReActGraphDeps,
   options: CreateReActGraphOptions = {},
 ) {
-  // 返回编译后的 StateGraph
+  const toolLoop = createToolLoopGraph<ReActDomainState, { answer: string }>({
+    model: deps.model,
+    policy: {
+      instructions: deps.instructions,
 
-  // state
+      createInitialHistory({ domainState }) {
+        return domainState.history
+      },
+
+      createToolSet() {
+        return {
+          definitions: deps.tools,
+          executor: deps.executor,
+        }
+      },
+
+      beforeToolExecution: ({ domainState }) => ok({ domainState }),
+
+      reduceToolResults({
+        domainState,
+        results,
+        continuationItems,
+      }) {
+        const outputItems = results.map(toObservation)
+        return ok({
+          domainState: {
+            ...domainState,
+            history: [
+              ...domainState.history,
+              ...removeKnownGatewayMetadata(continuationItems),
+              ...outputItems,
+            ],
+          },
+          outputItems,
+        })
+      },
+
+      finalize({ domainState, finalText, continuationItems }) {
+        const answer = finalText?.trim()
+        if (!answer) {
+          return err({
+            code: 'no_candidate_answer',
+            message: 'The model did not provide a candidate answer.',
+          })
+        }
+
+        return ok({
+          domainState: {
+            ...domainState,
+            history: [
+              ...domainState.history,
+              ...removeKnownGatewayMetadata(continuationItems),
+            ],
+          },
+          value: { answer },
+        })
+      },
+    },
+    initialToolChoice: deps.initialToolChoice,
+  })
+
   const reActState = new StateSchema({
     goal: z.string(),
-    history: new ReducedValue(
-      z.array(z.custom<OpenAIResponseInputItem>()).default(() => []),
-      {
-        reducer(
-          left: OpenAIResponseInputItem[],
-          right: OpenAIResponseInputItem[],
-        ) {
-          return left.concat(removeKnownGatewayMetadata(right))
-        },
-      },
-    ),
+    // ToolLoop 会返回完整 history，所以这里不能再用自动 concat 的 Reducer。
+    history: z.array(z.custom<OpenAIResponseInputItem>()).default(() => []),
     pendingToolCalls: z.array(z.object({
       callId: z.string(),
       name: z.string(),
       arguments: z.string(),
-    })),
+    })).default(() => []),
     candidateAnswer: z.string().optional(),
-    toolRounds: z.number().default(0),
-    maxToolRounds: z.number().default(5),
-    failureCount: z.number().default(0),
-    maxFailures: z.number().default(2),
+    toolRounds: z.number().int().nonnegative().default(0),
+    maxToolRounds: z.number().int().positive().default(5),
+    failureCount: z.number().int().nonnegative().default(0),
+    maxFailures: z.number().int().positive().default(2),
     status: z.enum(ReActStatus).default(ReActStatus.Pending),
     answer: z.string().optional(),
     error: z.object({
@@ -58,183 +148,67 @@ export function createReActGraph(
     }).optional(),
   })
 
-  function getRunId(runtime: { context?: { runId?: string } }): string {
-    if (runtime?.context?.runId) {
-      return runtime.context.runId
-    }
-    throw new Error('runId not found')
-  }
-
   return new StateGraph(reActState, {
     context: z.object({ runId: z.string().min(1) }),
   })
-    .addNode('initialize', (state) => {
-      return {
-        history: [{ role: 'user', content: state.goal }],
-        toolRounds: 0,
-        status: ReActStatus.Running,
-      }
-    })
-    .addNode('execute_tools', async (state, { signal, context }) => {
-      const runId = getRunId({ context })
-
-      const fnCalls = await Promise.all(state.pendingToolCalls.map(async (call) => {
-        return await deps.executor.execute({
-          name: call.name,
-          arguments: call.arguments,
-          callId: call.callId,
+    .addNode('initialize', state => ({
+      history: [{ role: 'user', content: state.goal }],
+      pendingToolCalls: [],
+      candidateAnswer: undefined,
+      toolRounds: 0,
+      failureCount: 0,
+      status: ReActStatus.Running,
+      answer: undefined,
+      error: undefined,
+    }))
+    .addNode('tool_loop', async (state, runtime) => {
+      try {
+        const runId = getRunId(runtime)
+        const loopState = await toolLoop.invoke({
+          domainState: {
+            goal: state.goal,
+            history: state.history,
+          },
+          maxToolRounds: state.maxToolRounds,
+          maxFailures: state.maxFailures,
         }, {
-          signal,
-          runId,
+          context: { runId },
+          signal: runtime.signal,
+          recursionLimit: 100,
         })
-      }))
 
-      return {
-        history: fnCalls.map((call) => {
-          return {
-            type: 'function_call_output',
-            call_id: call.callId,
-            output: JSON.stringify(call.ok
-              ? {
-                  ok: true,
-                  data: call.output,
-                }
-              : {
-                  ok: false,
-                  error: call.error,
-                }),
-          }
-        }),
-        failureCount: state.failureCount + fnCalls.filter(call => !call.ok).length,
-        pendingToolCalls: [],
-        toolRounds: state.toolRounds + 1,
-      }
-    }, {
-      input: reActState,
-      errorHandler: (_, nodeError) => {
-        return new Command({
-          update: {
-            status: ReActStatus.Failed,
-            error: {
-              code: 'execute_tools_node_error',
-              message: `Node ${nodeError.node} failed`,
-            },
-          },
-          goto: 'failed',
-        })
-      },
-      ends: ['failed'],
-    })
-    .addNode('call_model', async (state, { signal }) => {
-      const modelTurn = await deps.model.runTurn({
-        instructions: deps.instructions,
-        history: state.history,
-        tools: deps.tools,
-        signal,
-        toolChoice: state.toolRounds === 0
-          ? deps.initialToolChoice
-          : undefined,
-      })
-      return {
-        history: modelTurn.continuationItems,
-        pendingToolCalls: modelTurn.functionCalls,
-        candidateAnswer: modelTurn.finalText,
-      }
-    }, {
-      input: reActState,
-      errorHandler: (_, nodeError) => {
-        return new Command({
-          update: {
-            status: ReActStatus.Failed,
-            error: {
-              code: 'call_model_node_error',
-              message: `Node ${nodeError.node} failed`,
-            },
-          },
-          goto: 'failed',
-        })
-      },
-      ends: ['failed'],
-    })
-    .addNode('final', async (state) => {
-      return { answer: state.candidateAnswer?.trim(), status: ReActStatus.Completed }
-    })
-    .addNode('failed', async (state, { context }) => {
-      const runId = getRunId({ context })
-      const _state = {
-        status: ReActStatus.Failed,
-        error: {
-          code: 'unknown error',
-          message: `[${runId}] unknown error`,
-        },
-      }
+        const domainState = loopState.domainState as ReActDomainState
+        const error = loopState.error
+          ? mapLoopError(loopState.error)
+          : undefined
+        const answer = loopState.output as { answer: string } | null
 
-      if (state.error) {
         return {
-          ..._state,
-          error: state.error,
+          history: domainState.history,
+          pendingToolCalls: [],
+          candidateAnswer: loopState.finalText ?? undefined,
+          toolRounds: loopState.toolRound,
+          failureCount: loopState.failureCount,
+          ...(error
+            ? { status: ReActStatus.Failed, error }
+            : {
+                status: ReActStatus.Completed,
+                answer: answer?.answer,
+              }),
         }
       }
-
-      if (state.failureCount >= state.maxFailures) {
+      catch {
         return {
-          ..._state,
+          status: ReActStatus.Failed,
           error: {
-            code: 'max_failures',
-            message: `[${runId}] max failures reached`,
+            code: 'call_model_node_error',
+            message: 'Tool loop failed.',
           },
         }
       }
-
-      if (state.maxToolRounds <= state.toolRounds) {
-        return {
-          ..._state,
-          error: {
-            code: 'max_tool_rounds',
-            message: `[${runId}] max tool rounds reached`,
-          },
-        }
-      }
-
-      if (!state.candidateAnswer || !state.candidateAnswer.trim()) {
-        return {
-          ..._state,
-          error: {
-            code: 'no_candidate_answer',
-            message: `[${runId}] no candidate answer`,
-          },
-        }
-      }
-
-      return _state
     })
     .addEdge(START, 'initialize')
-    .addEdge('initialize', 'call_model')
-    .addEdge('final', END)
-    .addConditionalEdges('execute_tools', async (state) => {
-      if (state.failureCount >= state.maxFailures) {
-        return 'failed'
-      }
-      return 'call_model'
-    })
-    .addConditionalEdges('call_model', async (state) => {
-      if (state.pendingToolCalls.length) {
-        if (
-          state.maxToolRounds <= state.toolRounds
-          || state.failureCount >= state.maxFailures
-        ) {
-          return 'failed'
-        }
-        return 'execute_tools'
-      }
-
-      if (state.candidateAnswer?.trim()) {
-        return 'final'
-      }
-
-      return 'failed'
-    })
-    .compile({
-      checkpointer: options.checkpointer,
-    })
+    .addEdge('initialize', 'tool_loop')
+    .addEdge('tool_loop', END)
+    .compile({ checkpointer: options.checkpointer })
 }

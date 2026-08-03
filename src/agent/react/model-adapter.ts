@@ -1,4 +1,8 @@
 import type {
+  ToolLoopModelTurn,
+  ToolLoopUsage,
+} from '@/agent/tool-loop/contracts'
+import type {
   OpenAIResponse,
   OpenAIResponseFunctionTool,
   OpenAIResponseInputItem,
@@ -11,15 +15,7 @@ import {
   removeKnownGatewayMetadata,
 } from '@/clients/openai'
 
-export interface ModelTurn {
-  continuationItems: OpenAIResponseInputItem[]
-  functionCalls: Array<{
-    callId: string
-    name: string
-    arguments: string
-  }>
-  finalText?: string
-}
+export type ModelTurn = ToolLoopModelTurn
 
 /**
  * Provider-neutral policy for whether a model turn may call a tool.
@@ -68,6 +64,19 @@ export function toModelTurn(
   }
 }
 
+export function toToolLoopUsage(
+  usage: OpenAIResponse['usage'],
+): ToolLoopUsage | undefined {
+  if (!usage)
+    return undefined
+
+  return {
+    inputTokens: usage.input_tokens,
+    cachedTokens: usage.input_tokens_details?.cached_tokens ?? 0,
+    cacheWriteTokens: usage.input_tokens_details?.cache_write_tokens ?? 0,
+  }
+}
+
 export class OpenAIResponsesModel implements ReActModel {
   private readonly executor: OpenAIResponsesExecutor
 
@@ -92,6 +101,9 @@ export class OpenAIResponsesModel implements ReActModel {
       signal: input.signal,
     })
 
-    return toModelTurn(response)
+    return {
+      ...toModelTurn(response),
+      usage: toToolLoopUsage(response.usage),
+    }
   }
 }

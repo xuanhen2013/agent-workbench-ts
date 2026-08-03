@@ -9,9 +9,12 @@ import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-
 import { importJdDocument } from '@/agent/interview-quiz/jd/import-jd'
 import { RetrievedMarketJdCatalog } from '@/agent/interview-quiz/jd/market-jd-catalog'
 import { SqliteLearningMemory } from '@/agent/interview-quiz/learning-memory/sqlite-learning-memory'
-import { QuizPlanner } from '@/agent/interview-quiz/planning'
 import { createCloudflareD1QuestionBankFromEnv } from '@/agent/interview-quiz/question-bank/cloudflare-d1-question-bank'
 import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
+import {
+  createPlanningSubgraph,
+} from '@/agent/interview-quiz/subgraphs/planning/graph'
+import { QuizPlanner } from '@/agent/interview-quiz/subgraphs/planning/planner'
 import { OpenAIResponsesModel } from '@/agent/react/model-adapter'
 import { createOpenAIResponsesExecutor } from '@/clients/openai'
 import { createCloudflareAiSearchRetrieverFromEnv } from '@/knowledge/cloudflare-ai-search'
@@ -132,15 +135,22 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
     checkpointer: new MemorySaver(),
     model: new OpenAIResponsesModel(openAIExecutor),
   })
+
+  const planner = new QuizPlanner(openAIExecutor, {
+    skillCatalog,
+    questionSignalRetriever,
+    answerEvidenceRetriever,
+    marketJdCatalog,
+  })
+  const planningSubgraph = createPlanningSubgraph({
+    planner,
+    questionBank,
+    questionSignalRetriever,
+  })
+
   const interviewQuizGraph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
-    planner: new QuizPlanner(openAIExecutor, {
-      skillCatalog,
-      questionSignalRetriever,
-      answerEvidenceRetriever,
-      marketJdCatalog,
-    }),
-    questionSignalRetriever,
+    planningSubgraph,
     jdRetriever: knowledgeRetriever,
     marketJdCatalog,
     questionBank,

@@ -5,11 +5,14 @@ import type {
   QuizRoundDraft,
   QuizRoundPlan,
   QuizStrategy,
-} from './contracts'
-import type { InterviewQuizError } from './errors'
+} from '../../contracts'
+import type { InterviewQuizError } from '../../errors'
 import type { JdContext, MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
 import type { LearningMemoryContext } from '@/agent/interview-quiz/learning-memory/contracts'
-import type { SearchKnowledgeOutput } from '@/agent/interview-quiz/tools/knowledge'
+import type {
+  ToolLoopModelTurn,
+  ToolLoopToolSet,
+} from '@/agent/tool-loop/contracts'
 import type {
   OpenAIResponseFunctionTool,
   OpenAIResponseInputItem,
@@ -19,19 +22,17 @@ import type {
   KnowledgeRetriever,
   RetrievedChunk,
 } from '@/knowledge/contracts'
-import type { LoadedSkill, SkillCatalogEntry } from '@/skills/contracts'
+import type { SkillCatalogEntry } from '@/skills/contracts'
 import type { MiniTool } from '@/tools/_core/types'
 import { err, ok } from 'neverthrow'
 import { zodTextFormat } from 'openai/helpers/zod'
 import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
 import {
   createSearchSimilarJdsTool,
-  JdToolName,
 } from '@/agent/interview-quiz/tools/jd'
 import {
   createSearchAnswerEvidenceTool,
   createSearchQuestionSignalTool,
-  KnowledgeToolName,
 } from '@/agent/interview-quiz/tools/knowledge'
 import { toModelTurn } from '@/agent/react/model-adapter'
 import { KnowledgeEvidenceRole } from '@/knowledge/contracts'
@@ -40,13 +41,12 @@ import { ToolExecutor, ToolRegistry } from '@/tools/_core'
 import { toResponseTool } from '@/tools/_core/adapters/openai-response'
 import {
   createSkillTools,
-  SkillToolName,
 } from '@/tools/skill'
-import { QuestionType, QuizRoundDraftSchema } from './contracts'
+import { QuestionType, QuizRoundDraftSchema } from '../../contracts'
 import {
   createInterviewQuizError,
   InterviewQuizErrorCode,
-} from './errors'
+} from '../../errors'
 
 /**
  * Prompt Cache 要求稳定内容位于相同前缀，因此这里不能插入轮次、难度或错题。
@@ -106,21 +106,7 @@ export interface QuizPlannerOptions {
   marketJdCatalog?: Pick<MarketJdCatalog, 'search'>
 }
 
-export type QuizPlanResult
-  = | {
-    ok: true
-    draft: QuizRoundDraft
-    continuationItems: OpenAIResponseInputItem[]
-    /** Graph 预取和 Planner Tool 本轮实际返回的有界资料快照。 */
-    retrievedChunks: RetrievedChunk[]
-    usage?: QuizModelUsage
-  }
-  | {
-    ok: false
-    error: QuizPlanError
-  }
-
-function parseJson(text: string): Result<unknown, QuizPlanError> {
+export function parseJson(text: string): Result<unknown, QuizPlanError> {
   try {
     return ok(JSON.parse(text))
   }
@@ -139,7 +125,7 @@ function normalizeStem(stem: string) {
  * 同一集合按 chunkId 去重，并分别限制两种资料角色的总量。
  * 不能对混合数组直接 slice，否则会让一种角色挤掉另一种角色。
  */
-function mergeAvailableChunks(
+export function mergeAvailableChunks(
   current: readonly RetrievedChunk[],
   incoming: readonly RetrievedChunk[],
 ): RetrievedChunk[] {
@@ -261,7 +247,7 @@ export function renderJdContext(context: JdContext | null): string {
   ].join('\n')
 }
 
-function addUsage(
+export function addUsage(
   current: QuizModelUsage | undefined,
   responseUsage: {
     input_tokens: number
@@ -302,6 +288,92 @@ export class QuizPlanner {
       createSearchAnswerEvidenceTool(options.answerEvidenceRetriever),
     ]
     this.marketJdCatalog = options.marketJdCatalog
+  }
+
+  /**
+   * Planning Graph 的最小 Planner Port。
+   * Graph 只知道这些能力，不知道 OpenAI Client、Retriever 或 Tool handler。
+   */
+  createInitialConversation(
+    input: QuizPlannerInput,
+  ): OpenAIResponseInputItem[] {
+    const skillCatalogItem: OpenAIResponseInputItem = {
+      role: 'user',
+      content: renderSkillCatalog(this.skillCatalog),
+    }
+
+    return [
+      skillCatalogItem,
+      ...input.history,
+      {
+        role: 'user',
+        content: [
+          renderRetrievedKnowledge(input.retrievedChunks),
+          renderForbiddenQuestionStems(input.previousQuestionStems),
+          renderLearningMemory(input.memoryContext),
+          renderJdContext(input.jdContext),
+        ].filter(Boolean).join('\n\n'),
+      },
+    ]
+  }
+
+  /** 根据当前 JD 决定本轮可以暴露给模型的 Tool 集合。 */
+  createToolSet(input: { jdContext: JdContext | null }): PlannerToolSet {
+    const tools = [...this.baseTools]
+    if (
+      this.marketJdCatalog
+      && input.jdContext?.reference.source === SelectedJdSource.Market
+    ) {
+      tools.push(createSearchSimilarJdsTool(
+        this.marketJdCatalog,
+        input.jdContext.reference.itemKey,
+      ))
+    }
+
+    const registry = new ToolRegistry()
+    for (const tool of tools)
+      registry.register(tool)
+
+    return {
+      definitions: tools.map(toResponseTool),
+      executor: new ToolExecutor(registry),
+    }
+  }
+
+  /** 单次模型调用；循环控制由通用 ToolLoopGraph 负责。 */
+  async runModel(input: {
+    history: OpenAIResponseInputItem[]
+    tools: OpenAIResponseFunctionTool[]
+    signal: AbortSignal
+  }): Promise<ToolLoopModelTurn> {
+    const response = await this.executor.runNoStream({
+      instructions: AGENT_QUIZ_INSTRUCTIONS,
+      input: input.history,
+      tools: input.tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
+      text: {
+        format: zodTextFormat(QuizRoundDraftSchema, 'agent_quiz_round'),
+      },
+      /** 相同 Prompt 版本共享 key；不要拼 threadId。 */
+      prompt_cache_key: AGENT_QUIZ_PROMPT_CACHE_KEY,
+    }, { signal: input.signal })
+
+    const usage = addUsage(undefined, response.usage)
+    return {
+      ...toModelTurn(response),
+      ...(usage ? { usage } : {}),
+    }
+  }
+
+  getRequiredSkillNames(): readonly SkillName[] {
+    const required: SkillName[] = [SkillName.QuestionAuthoring]
+    if (this.skillCatalog.some(skill => (
+      skill.name === SkillName.KnowledgeRetrieval
+    ))) {
+      required.push(SkillName.KnowledgeRetrieval)
+    }
+    return required
   }
 
   _validateQuizRoundDraft(
@@ -410,6 +482,13 @@ export class QuizPlanner {
     return ok(draft)
   }
 
+  validateDraft(
+    draft: QuizRoundDraft,
+    input: QuizPlannerInput,
+  ): Result<QuizRoundDraft, QuizPlanError> {
+    return this._validateQuizRoundDraft(draft, input)
+  }
+
   materializeRoundPlan(input: {
     threadId: string
     plannerInput: QuizPlannerInput
@@ -429,268 +508,30 @@ export class QuizPlanner {
       })),
     }
   }
+}
 
-  async createRound(
+export type PlannerToolSet = ToolLoopToolSet
+
+export interface PlanningPlannerPort {
+  createInitialConversation: (
     input: QuizPlannerInput,
-    options: { signal: AbortSignal },
-  ): Promise<QuizPlanResult> {
-    const tools = [...this.baseTools]
-    if (
-      this.marketJdCatalog
-      && input.jdContext?.reference.source === SelectedJdSource.Market
-    ) {
-      tools.push(createSearchSimilarJdsTool(
-        this.marketJdCatalog,
-        input.jdContext.reference.itemKey,
-      ))
-    }
-    const registry = new ToolRegistry()
-    for (const tool of tools)
-      registry.register(tool)
-    const toolDefinitions: OpenAIResponseFunctionTool[] = tools.map(
-      toResponseTool,
-    )
-    const toolExecutor = new ToolExecutor(registry)
-
-    const skillCatalogItem: OpenAIResponseInputItem = {
-      role: 'user',
-      content: renderSkillCatalog(this.skillCatalog),
-    }
-    let plannerConversation: OpenAIResponseInputItem[] = [
-      skillCatalogItem,
-      ...input.history,
-      {
-        role: 'user',
-        content: [
-          renderRetrievedKnowledge(input.retrievedChunks),
-          renderForbiddenQuestionStems(input.previousQuestionStems),
-          renderLearningMemory(input.memoryContext),
-          renderJdContext(input.jdContext),
-        ].filter(Boolean).join('\n\n'),
-      },
-    ]
-    let availableChunks = mergeAvailableChunks([], input.retrievedChunks)
-    const loadedSkillNames = new Set<SkillName>()
-    const plannerToolRunId = crypto.randomUUID()
-    let toolRoundCount = 0
-    let questionSignalSearchCount = 0
-    let answerEvidenceSearchCount = 0
-    let similarJdSearchCount = 0
-    let totalUsage: QuizModelUsage | undefined
-
-    while (true) {
-      const response = await this.executor.runNoStream({
-        instructions: AGENT_QUIZ_INSTRUCTIONS,
-        input: plannerConversation,
-        tools: toolDefinitions,
-        tool_choice: 'auto',
-        parallel_tool_calls: true,
-        text: {
-          format: zodTextFormat(QuizRoundDraftSchema, 'agent_quiz_round'),
-        },
-        /** 相同 Prompt 版本共享 key；不要拼 threadId。 */
-        prompt_cache_key: AGENT_QUIZ_PROMPT_CACHE_KEY,
-      }, options)
-      totalUsage = addUsage(totalUsage, response.usage)
-
-      const turn = toModelTurn(response)
-
-      if (turn.functionCalls.length === 0) {
-        const requiredSkills = [SkillName.QuestionAuthoring]
-        if (this.skillCatalog.some(skill => (
-          skill.name === SkillName.KnowledgeRetrieval
-        ))) {
-          requiredSkills.push(SkillName.KnowledgeRetrieval)
-        }
-
-        if (requiredSkills.some(skill => !loadedSkillNames.has(skill))) {
-          return {
-            ok: false,
-            error: createInterviewQuizError(
-              InterviewQuizErrorCode.RequiredSkillMissing,
-            ),
-          }
-        }
-
-        if (!availableChunks.some(chunk => (
-          chunk.evidenceRole === KnowledgeEvidenceRole.AnswerEvidence
-        ))) {
-          return {
-            ok: false,
-            error: createInterviewQuizError(
-              InterviewQuizErrorCode.AnswerEvidenceMissing,
-            ),
-          }
-        }
-
-        if (!turn.finalText?.trim()) {
-          return {
-            ok: false,
-            error: createInterviewQuizError(
-              InterviewQuizErrorCode.SkillFinalOutputMissing,
-            ),
-          }
-        }
-
-        const result = parseJson(turn.finalText)
-          .andThen((candidate) => {
-            const parsed = QuizRoundDraftSchema.safeParse(candidate)
-            return parsed.success
-              ? ok(parsed.data)
-              : err(createInterviewQuizError(
-                  InterviewQuizErrorCode.InvalidQuizRoundDraft,
-                ))
-          })
-          .andThen(draft => this._validateQuizRoundDraft(draft, {
-            ...input,
-            retrievedChunks: availableChunks,
-          }))
-
-        if (result.isErr()) {
-          return {
-            ok: false,
-            error: result.error,
-          }
-        }
-
-        return {
-          ok: true,
-          draft: result.value,
-          continuationItems: turn.continuationItems,
-          retrievedChunks: availableChunks,
-          ...(totalUsage ? { usage: totalUsage } : {}),
-        }
-      }
-
-      if (toolRoundCount >= MAX_PLANNER_TOOL_ROUNDS) {
-        return {
-          ok: false,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.PlannerToolRoundLimit,
-          ),
-        }
-      }
-      toolRoundCount += 1
-
-      const questionSignalSearchesThisRound = turn.functionCalls.filter(
-        call => call.name === KnowledgeToolName.SearchQuestionSignal,
-      ).length
-      const answerEvidenceSearchesThisRound = turn.functionCalls.filter(
-        call => call.name === KnowledgeToolName.SearchAnswerEvidence,
-      ).length
-      const similarJdSearchesThisRound = turn.functionCalls.filter(
-        call => call.name === JdToolName.SearchSimilarJds,
-      ).length
-
-      // parallel_tool_calls 可能让一轮出现多个搜索，因此必须在任何 Tool
-      // 执行前检查整轮预算，不能先产生外部调用再宣告超额。
-      if (
-        questionSignalSearchCount + questionSignalSearchesThisRound
-        > MAX_QUESTION_SIGNAL_SEARCHES
-      ) {
-        return {
-          ok: false,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.QuestionSignalSearchLimit,
-          ),
-        }
-      }
-
-      if (
-        answerEvidenceSearchCount + answerEvidenceSearchesThisRound
-        > MAX_ANSWER_EVIDENCE_SEARCHES
-      ) {
-        return {
-          ok: false,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.AnswerEvidenceSearchLimit,
-          ),
-        }
-      }
-
-      if (
-        similarJdSearchCount + similarJdSearchesThisRound
-        > MAX_SIMILAR_JD_SEARCHES
-      ) {
-        return {
-          ok: false,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.SimilarJdSearchLimit,
-          ),
-        }
-      }
-
-      const results = await Promise.all(turn.functionCalls.map(call => (
-        toolExecutor.execute(call, {
-          runId: plannerToolRunId,
-          signal: options.signal,
-        })
-      )))
-      const failedResult = results.find(result => !result.ok)
-
-      if (failedResult) {
-        const isKnowledgeTool = Object.values(KnowledgeToolName)
-          .includes(failedResult.name as KnowledgeToolName)
-          || failedResult.name === JdToolName.SearchSimilarJds
-        return {
-          ok: false,
-          error: createInterviewQuizError(
-            isKnowledgeTool
-              ? InterviewQuizErrorCode.KnowledgeToolFailed
-              : InterviewQuizErrorCode.SkillToolFailed,
-          ),
-        }
-      }
-
-      questionSignalSearchCount += questionSignalSearchesThisRound
-      answerEvidenceSearchCount += answerEvidenceSearchesThisRound
-      similarJdSearchCount += similarJdSearchesThisRound
-
-      const successfulResults = results.filter(result => result.ok)
-      const boundedOutputs = new Map<string, unknown>()
-      for (const result of successfulResults) {
-        boundedOutputs.set(result.callId, result.output)
-
-        if (result.name === SkillToolName.LoadSkill) {
-          loadedSkillNames.add((result.output as LoadedSkill).name)
-        }
-
-        if (
-          result.name === KnowledgeToolName.SearchQuestionSignal
-          || result.name === KnowledgeToolName.SearchAnswerEvidence
-        ) {
-          const output = result.output as SearchKnowledgeOutput
-          const existingChunkIds = new Set(
-            availableChunks.map(chunk => chunk.chunkId),
-          )
-          const mergedChunks = mergeAvailableChunks(
-            availableChunks,
-            output.chunks,
-          )
-          const acceptedChunks = mergedChunks.filter(
-            chunk => !existingChunkIds.has(chunk.chunkId),
-          )
-
-          // 模型和最终 State 必须看到同一集合。超过总量预算或重复的 Chunk
-          // 不仅不写 State，也不进入 function_call_output。
-          availableChunks = mergedChunks
-          boundedOutputs.set(result.callId, {
-            chunks: acceptedChunks,
-          } satisfies SearchKnowledgeOutput)
-        }
-      }
-
-      const toolOutputs: OpenAIResponseInputItem[] = successfulResults.map(result => ({
-        type: 'function_call_output',
-        call_id: result.callId,
-        output: JSON.stringify(boundedOutputs.get(result.callId)),
-      }))
-
-      plannerConversation = [
-        ...plannerConversation,
-        ...turn.continuationItems,
-        ...toolOutputs,
-      ]
-    }
-  }
+  ) => OpenAIResponseInputItem[]
+  createToolSet: (input: {
+    jdContext: JdContext | null
+  }) => PlannerToolSet
+  runModel: (input: {
+    history: OpenAIResponseInputItem[]
+    tools: OpenAIResponseFunctionTool[]
+    signal: AbortSignal
+  }) => Promise<ToolLoopModelTurn>
+  getRequiredSkillNames: () => readonly SkillName[]
+  validateDraft: (
+    draft: QuizRoundDraft,
+    input: QuizPlannerInput,
+  ) => Result<QuizRoundDraft, QuizPlanError>
+  materializeRoundPlan: (input: {
+    threadId: string
+    plannerInput: QuizPlannerInput
+    draft: QuizRoundDraft
+  }) => QuizRoundPlan
 }

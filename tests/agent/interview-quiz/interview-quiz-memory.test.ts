@@ -23,6 +23,7 @@ import { SqliteLearningMemory } from '@/agent/interview-quiz/learning-memory/sql
 import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
 import {
   createQuizGraphFixture,
+  createQuizPlanningSubgraph,
   FakeKnowledgeRetriever,
   FakeLearningMemory,
   FakeQuizPlanner,
@@ -112,8 +113,11 @@ function createGraph(
   const questionSignalRetriever = new FakeKnowledgeRetriever()
   const graph = createInterviewQuizGraph({
     checkpointer: new MemorySaver(),
-    planner,
-    questionSignalRetriever,
+    planningSubgraph: createQuizPlanningSubgraph(
+      planner,
+      questionBank,
+      questionSignalRetriever,
+    ),
     questionBank,
     learningMemory,
   })

@@ -53,10 +53,10 @@ export const InterviewQuizStateSchema = new StateSchema({
     },
   ),
 
-  /** plan_execute 只消费该字段，不在模型调用阶段重新决定难度和策略。 */
+  /** initialize 或 replan 确定；Planning Subgraph 只读取。 */
   roundContext: z.custom<QuizRoundContext>().nullable().default(null),
 
-  /** 当前正在展示和判分的私有题卷。 */
+  /** Planning 成功后回写，后续题库、Interrupt 和判分共同使用。 */
   currentPlan: z.custom<QuizRoundPlan>().nullable().default(null),
 
   /** Answer Interrupt Resume 后写入，verify 消费。 */
@@ -65,11 +65,8 @@ export const InterviewQuizStateSchema = new StateSchema({
   /** 当前 Planner 调用的 usage，在 verify 时并入完成轮次。 */
   currentModelUsage: z.custom<QuizModelUsage>().nullable().default(null),
 
-  /** 当前轮检索结果快照；固定预取和 Planner Tool 都只服务当前轮。 */
+  /** 当前轮实际使用的有界资料快照。 */
   retrievedChunks: z.custom<RetrievedChunk[]>().default(() => []),
-
-  /** QuestionBank 为当前轮返回的有限历史题干；不包含答案和完整题库。 */
-  questionBankStems: z.array(z.string()).default(() => []),
 
   /** 启动时从 SQL 聚合出的有界长期记忆，不保存完整 attempts。 */
   memoryContext: z.custom<LearningMemoryContext>().default(() => ({
@@ -102,3 +99,4 @@ export const InterviewQuizStateSchema = new StateSchema({
 })
 
 export type InterviewQuizState = typeof InterviewQuizStateSchema.State
+export type InterviewQuizUpdate = typeof InterviewQuizStateSchema.Update

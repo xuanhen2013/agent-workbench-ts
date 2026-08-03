@@ -1,8 +1,6 @@
 import type OpenAI from 'openai'
-import type {
-  QuizPlannerInput,
-  QuizPlanResult,
-} from '@/agent/interview-quiz/planning'
+import type { QuizPlannerInput } from '@/agent/interview-quiz/subgraphs/planning/planner'
+import type { PlanningState } from '@/agent/interview-quiz/subgraphs/planning/state'
 import type { OpenAIResponse } from '@/clients/openai'
 import type { KnowledgeRetriever, RetrievedChunk } from '@/knowledge/contracts'
 import type { SkillCatalogEntry } from '@/skills/contracts'
@@ -14,6 +12,9 @@ import {
 import { InterviewQuizErrorCode } from '@/agent/interview-quiz/errors'
 import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
 import {
+  createPlanningSubgraph,
+} from '@/agent/interview-quiz/subgraphs/planning/graph'
+import {
   AGENT_QUIZ_INSTRUCTIONS,
   AGENT_QUIZ_PROMPT_CACHE_KEY,
   MAX_ANSWER_EVIDENCE_SEARCHES,
@@ -24,7 +25,7 @@ import {
   QuizPlanner,
   renderForbiddenQuestionStems,
   renderLearningMemory,
-} from '@/agent/interview-quiz/planning'
+} from '@/agent/interview-quiz/subgraphs/planning/planner'
 import { JdToolName } from '@/agent/interview-quiz/tools/jd'
 import { KnowledgeToolName } from '@/agent/interview-quiz/tools/knowledge'
 import { OpenAIResponsesExecutor } from '@/clients/openai'
@@ -34,13 +35,13 @@ import {
 } from '@/knowledge/contracts'
 import { SkillName } from '@/skills/contracts'
 import { SkillToolName } from '@/tools/skill'
-import { createQuizDraft as createRawQuizDraft } from '../../helpers/quiz'
+import { createQuizDraft as createRawQuizDraft } from '../../../../helpers/quiz'
 
 const skillCatalog: readonly SkillCatalogEntry[] = [{
   name: SkillName.QuestionAuthoring,
   description: 'Test question authoring instructions.',
   root: new URL(
-    '../../skills/fixtures/question-authoring/',
+    '../../../../skills/fixtures/question-authoring/',
     import.meta.url,
   ),
 }]
@@ -51,7 +52,7 @@ const knowledgeSkillCatalog: readonly SkillCatalogEntry[] = [
     name: SkillName.KnowledgeRetrieval,
     description: 'Test knowledge retrieval instructions.',
     root: new URL(
-      '../../../skills/knowledge-retrieval/',
+      '../../../../../skills/knowledge-retrieval/',
       import.meta.url,
     ),
   },
@@ -335,22 +336,56 @@ function createPlanner(
   )
 }
 
-async function createRound(outputText: string): Promise<QuizPlanResult> {
-  return await createPlanner(skillTrace(outputText))
-    .createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+async function runPlannerGraph(
+  planner: QuizPlanner,
+  input: QuizPlannerInput = validPlannerInput(),
+): Promise<PlanningState> {
+  const graph = createPlanningSubgraph({
+    planner,
+    questionBank: {
+      async findRecentStems({ signal }) {
+        signal.throwIfAborted()
+        return []
+      },
+    },
+    questionSignalRetriever: {
+      async search({ signal }) {
+        signal.throwIfAborted()
+        return input.retrievedChunks
+      },
+    },
+  })
+
+  return await graph.invoke({
+    threadId: 'planner-loop-test',
+    roundContext: {
+      round: input.round,
+      difficulty: input.difficulty,
+      strategy: input.strategy,
+    },
+    modelHistory: input.history,
+    completedQuestionStems: input.previousQuestionStems,
+    previousWrongKnowledgePoints: [],
+    memoryContext: input.memoryContext,
+    jdContext: input.jdContext,
+  }, {
+    signal: new AbortController().signal,
+    recursionLimit: 100,
+  })
+}
+
+async function runDraft(outputText: string): Promise<PlanningState> {
+  return await runPlannerGraph(
+    createPlanner(skillTrace(outputText)),
+  )
 }
 
 function expectPlannerError(
-  result: QuizPlanResult,
+  result: PlanningState,
   code: InterviewQuizErrorCode,
 ) {
-  expect(result.ok).toBe(false)
-  if (result.ok)
-    throw new Error('Expected QuizPlanner to return a validation error.')
-
-  expect(result.error.code).toBe(code)
+  expect(result.error?.code).toBe(code)
+  expect(result.currentPlan).toBeNull()
 }
 
 describe('QuizPlanner', () => {
@@ -377,24 +412,22 @@ describe('QuizPlanner', () => {
       ),
       plannerOptions(),
     )
-    const result = await planner.createRound({
+    const result = await runPlannerGraph(planner, {
       ...validPlannerInput(),
       memoryContext: {
         weakKnowledgePoints: ['memory-only-state', 'memory-only-tool'],
       },
-    }, { signal: new AbortController().signal })
+    })
 
-    expect(result.ok).toBe(true)
+    expect(result.error).toBeNull()
     expect(JSON.stringify(requests[0]?.input)).toContain('<learning_memory>')
     expect(JSON.stringify(requests[0]?.input)).toContain('memory-only-state')
-    if (result.ok) {
-      expect(JSON.stringify(result.continuationItems))
-        .not
-        .toContain('<learning_memory>')
-      expect(JSON.stringify(result.continuationItems))
-        .not
-        .toContain('memory-only-state')
-    }
+    expect(JSON.stringify(result.continuationItems))
+      .not
+      .toContain('<learning_memory>')
+    expect(JSON.stringify(result.continuationItems))
+      .not
+      .toContain('memory-only-state')
   })
 
   test('历史题干以有界负向列表进入模型，不携带私有题目字段', () => {
@@ -420,14 +453,11 @@ describe('QuizPlanner', () => {
 
   test('完整 Skill Trace 后生成合法五题并只保留最终 continuation', async () => {
     const draft = createQuizDraft(2)
-    const result = await createRound(JSON.stringify(draft))
+    const result = await runDraft(JSON.stringify(draft))
 
-    expect(result.ok).toBe(true)
-    if (!result.ok)
-      throw new Error(`Expected a draft, received ${result.error.code}.`)
-
-    expect(result.draft).toEqual(draft)
-    expect(result.draft.questions[0]).toMatchObject({
+    expect(result.error).toBeNull()
+    expect(result.candidateDraft).toEqual(draft)
+    expect(result.candidateDraft?.questions[0]).toMatchObject({
       correctOptionIds: ['A'],
       explanation: expect.any(String),
     })
@@ -438,7 +468,7 @@ describe('QuizPlanner', () => {
     })
     expect(JSON.stringify(result.continuationItems)).not.toContain('load-skill-call')
     expect(result.retrievedChunks).toEqual([knowledgeChunk()])
-    expect(result.usage).toEqual({
+    expect(result.modelUsage).toEqual({
       inputTokens: 700,
       cachedTokens: 200,
       cacheWriteTokens: 0,
@@ -459,9 +489,7 @@ describe('QuizPlanner', () => {
       plannerOptions(),
     )
 
-    await planner.createRound(input, {
-      signal: new AbortController().signal,
-    })
+    await runPlannerGraph(planner, input)
 
     expect(requests).toHaveLength(4)
     expect(requests[0]).toMatchObject({
@@ -530,26 +558,24 @@ describe('QuizPlanner', () => {
       },
     )
 
-    const result = await planner.createRound({
+    const result = await runPlannerGraph(planner, {
       ...validPlannerInput(),
       retrievedChunks: [signal],
-    }, { signal: new AbortController().signal })
+    })
 
-    expect(result.ok).toBe(true)
+    expect(result.error).toBeNull()
     expect(JSON.stringify(requests[0]?.input)).toContain(signal.chunkId)
     expect(JSON.stringify(requests[0]?.input)).not.toContain(evidence.chunkId)
     expect(JSON.stringify(requests[1]?.input)).toContain('# Knowledge Retrieval')
     expect(questionSignalRetriever.calls).toHaveLength(1)
     expect(answerEvidenceRetriever.calls).toHaveLength(1)
-    if (result.ok) {
-      expect(result.retrievedChunks).toEqual([signal, evidence])
-      expect(JSON.stringify(result.continuationItems)).not.toContain(
-        '<retrieved_knowledge>',
-      )
-      expect(JSON.stringify(result.continuationItems)).not.toContain(
-        'search-answer-evidence-call',
-      )
-    }
+    expect(result.retrievedChunks).toEqual([signal, evidence])
+    expect(JSON.stringify(result.continuationItems)).not.toContain(
+      '<retrieved_knowledge>',
+    )
+    expect(JSON.stringify(result.continuationItems)).not.toContain(
+      'search-answer-evidence-call',
+    )
   })
 
   test('只有市场 JD 模式注册 search_similar_jds，并把有界结果返回模型', async () => {
@@ -584,7 +610,7 @@ describe('QuizPlanner', () => {
       },
     )
 
-    const result = await planner.createRound({
+    const result = await runPlannerGraph(planner, {
       ...validPlannerInput(),
       jdContext: {
         reference: {
@@ -594,9 +620,9 @@ describe('QuizPlanner', () => {
         title: 'Agent 前端工程师',
         focusKnowledgePoints: ['LangGraph'],
       },
-    }, { signal: new AbortController().signal })
+    })
 
-    expect(result.ok).toBe(true)
+    expect(result.error).toBeNull()
     expect(catalogCalls[0]).toMatchObject({
       query: 'Agent 前端共同要求',
       limit: 3,
@@ -634,26 +660,24 @@ describe('QuizPlanner', () => {
     const itemKey
       = 'question-signal/jd-market/jd-market-aaaaaaaaaaaaaaaaaaaa.md'
 
-    const result = await planner.createRound({
+    const result = await runPlannerGraph(planner, {
       ...validPlannerInput(),
       jdContext: {
         reference: { source: SelectedJdSource.Market, itemKey },
         title: 'Agent 前端工程师',
         focusKnowledgePoints: ['LangGraph'],
       },
-    }, { signal: new AbortController().signal })
+    })
 
     expectPlannerError(result, InterviewQuizErrorCode.SimilarJdSearchLimit)
     expect(searchCount).toBe(0)
   })
 
   test('没有 answer_evidence 就输出时返回稳定错误', async () => {
-    const result = await createPlanner([
+    const result = await runPlannerGraph(createPlanner([
       loadSkillResponse(),
       finalResponse(JSON.stringify(createQuizDraft(2))),
-    ]).createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+    ]))
 
     expectPlannerError(result, InterviewQuizErrorCode.AnswerEvidenceMissing)
   })
@@ -677,9 +701,7 @@ describe('QuizPlanner', () => {
       },
     )
 
-    const result = await planner.createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+    const result = await runPlannerGraph(planner)
 
     expectPlannerError(
       result,
@@ -707,9 +729,7 @@ describe('QuizPlanner', () => {
       },
     )
 
-    const result = await planner.createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+    const result = await runPlannerGraph(planner)
 
     expectPlannerError(
       result,
@@ -733,13 +753,10 @@ describe('QuizPlanner', () => {
       },
     )
 
-    const result = await planner.createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+    const result = await runPlannerGraph(planner)
 
     expectPlannerError(result, InterviewQuizErrorCode.KnowledgeToolFailed)
-    if (!result.ok)
-      expect(result.error.message).not.toContain('secret')
+    expect(result.error?.message).not.toContain('secret')
   })
 
   test('两种 Chunk 分别限量，丢弃项既不进 State 也不回传模型', async () => {
@@ -788,14 +805,12 @@ describe('QuizPlanner', () => {
       },
     )
 
-    const result = await planner.createRound({
+    const result = await runPlannerGraph(planner, {
       ...validPlannerInput(),
       retrievedChunks: initialSignals,
-    }, { signal: new AbortController().signal })
+    })
 
-    expect(result.ok).toBe(true)
-    if (!result.ok)
-      throw new Error(result.error.code)
+    expect(result.error).toBeNull()
 
     expect(result.retrievedChunks.filter(chunk => (
       chunk.evidenceRole === KnowledgeEvidenceRole.QuestionSignal
@@ -808,17 +823,15 @@ describe('QuizPlanner', () => {
   })
 
   test('未加载必需 Skill 就直接输出时失败', async () => {
-    const result = await createPlanner([
+    const result = await runPlannerGraph(createPlanner([
       finalResponse(JSON.stringify(createQuizDraft(2))),
-    ]).createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+    ]))
 
     expectPlannerError(result, InterviewQuizErrorCode.RequiredSkillMissing)
   })
 
   test('Skill Tool 失败时返回统一错误且不披露 Loader 细节', async () => {
-    const result = await createPlanner([
+    const result = await runPlannerGraph(createPlanner([
       loadSkillResponse(),
       functionCallResponse([{
         callId: 'escaped-resource-call',
@@ -828,13 +841,10 @@ describe('QuizPlanner', () => {
           resourcePath: '../secret.md',
         },
       }]),
-    ]).createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+    ]))
 
     expectPlannerError(result, InterviewQuizErrorCode.SkillToolFailed)
-    if (!result.ok)
-      expect(result.error.message).toBe('Skill Tool 执行失败。')
+    expect(result.error?.message).toBe('Skill Tool 执行失败。')
   })
 
   test('超过 Planner Tool 轮次预算时停止', async () => {
@@ -842,32 +852,27 @@ describe('QuizPlanner', () => {
       { length: MAX_PLANNER_TOOL_ROUNDS + 1 },
       () => loadSkillResponse(),
     )
-    const result = await createPlanner(repeatedCalls)
-      .createRound(validPlannerInput(), {
-        signal: new AbortController().signal,
-      })
+    const result = await runPlannerGraph(createPlanner(repeatedCalls))
 
     expectPlannerError(result, InterviewQuizErrorCode.PlannerToolRoundLimit)
   })
 
   test('加载 Skill 后没有最终文本时返回 final output missing', async () => {
-    const result = await createPlanner([
+    const result = await runPlannerGraph(createPlanner([
       loadSkillResponse(),
       searchAnswerEvidenceResponse(),
       {
         output: [],
         output_text: '',
       } as unknown as OpenAIResponse,
-    ]).createRound(validPlannerInput(), {
-      signal: new AbortController().signal,
-    })
+    ]))
 
     expectPlannerError(result, InterviewQuizErrorCode.SkillFinalOutputMissing)
   })
 
   test('模型返回非法 JSON 时返回 planner_json_invalid', async () => {
     expectPlannerError(
-      await createRound('{not-json'),
+      await runDraft('{not-json'),
       InterviewQuizErrorCode.PlannerJsonInvalid,
     )
   })
@@ -880,7 +885,7 @@ describe('QuizPlanner', () => {
     }
 
     expectPlannerError(
-      await createRound(JSON.stringify(draft)),
+      await runDraft(JSON.stringify(draft)),
       InterviewQuizErrorCode.InvalidSingleAnswerCount,
     )
   })
@@ -893,7 +898,7 @@ describe('QuizPlanner', () => {
     }
 
     expectPlannerError(
-      await createRound(JSON.stringify(draft)),
+      await runDraft(JSON.stringify(draft)),
       InterviewQuizErrorCode.InvalidMultipleAllOptionsCorrect,
     )
   })
@@ -906,7 +911,7 @@ describe('QuizPlanner', () => {
     }
 
     expectPlannerError(
-      await createRound(JSON.stringify(draft)),
+      await runDraft(JSON.stringify(draft)),
       InterviewQuizErrorCode.DuplicateQuestionStem,
     )
   })

@@ -15,6 +15,7 @@ import { QuizRoundRequestSchema } from '@/agent/interview-quiz/execution'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
 import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
 import {
+  createQuizPlanningSubgraph,
   FakeKnowledgeRetriever,
   FakeLearningMemory,
   FakeQuizPlanner,
@@ -64,8 +65,11 @@ function createGraph(questionBank: QuestionBank, planner = new FakeQuizPlanner()
     planner,
     graph: createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
-      planner,
-      questionSignalRetriever: new FakeKnowledgeRetriever(),
+      planningSubgraph: createQuizPlanningSubgraph(
+        planner,
+        questionBank,
+        new FakeKnowledgeRetriever(),
+      ),
       questionBank,
       learningMemory: new FakeLearningMemory(),
     }),

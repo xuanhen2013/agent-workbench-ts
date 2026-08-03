@@ -1,4 +1,5 @@
 import type { StateSnapshot } from '@langchain/langgraph'
+import type { KnowledgeRetriever } from '@/knowledge/contracts'
 import { Command, MemorySaver } from '@langchain/langgraph'
 import { describe, expect, test } from 'bun:test'
 import {
@@ -17,6 +18,7 @@ import {
 } from '@/knowledge/contracts'
 import {
   createQuizGraphFixture,
+  createQuizPlanningSubgraph,
   FakeKnowledgeRetriever,
   FakeLearningMemory,
   FakeQuizPlanner,
@@ -91,10 +93,14 @@ describe('Interview Quiz Graph RAG', () => {
     const itemKey
       = 'question-signal/jd-market/jd-market-aaaaaaaaaaaaaaaaaaaa.md'
     const loadCalls: string[] = []
+    const questionBank = new InMemoryQuestionBank()
     const graph = createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
-      planner,
-      questionSignalRetriever: knowledgeRetriever,
+      planningSubgraph: createQuizPlanningSubgraph(
+        planner,
+        questionBank,
+        knowledgeRetriever,
+      ),
       jdRetriever: knowledgeRetriever,
       marketJdCatalog: {
         async load(input) {
@@ -109,7 +115,7 @@ describe('Interview Quiz Graph RAG', () => {
           }
         },
       },
-      questionBank: new InMemoryQuestionBank(),
+      questionBank,
       learningMemory: new FakeLearningMemory(),
     })
     const threadId = 'quiz-market-jd-context-thread'
@@ -138,11 +144,15 @@ describe('Interview Quiz Graph RAG', () => {
   test('Graph 只预取 question_signal，Planner 返回动态 answer_evidence', async () => {
     const planner = new FakeQuizPlanner()
     const knowledgeRetriever = new FakeKnowledgeRetriever()
+    const questionBank = new InMemoryQuestionBank()
     const graph = createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
-      planner,
-      questionSignalRetriever: knowledgeRetriever,
-      questionBank: new InMemoryQuestionBank(),
+      planningSubgraph: createQuizPlanningSubgraph(
+        planner,
+        questionBank,
+        knowledgeRetriever,
+      ),
+      questionBank,
       learningMemory: new FakeLearningMemory(),
     })
     const threadId = 'quiz-rag-thread'
@@ -167,16 +177,21 @@ describe('Interview Quiz Graph RAG', () => {
 
   test('没有 question_signal 时仍交给 Planner 决定是否追加检索', async () => {
     const planner = new FakeQuizPlanner()
+    const questionBank = new InMemoryQuestionBank()
+    const questionSignalRetriever: Pick<KnowledgeRetriever, 'search'> = {
+      async search(input) {
+        input.signal.throwIfAborted()
+        return []
+      },
+    }
     const graph = createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
-      planner,
-      questionSignalRetriever: {
-        async search(input) {
-          input.signal.throwIfAborted()
-          return []
-        },
-      },
-      questionBank: new InMemoryQuestionBank(),
+      planningSubgraph: createQuizPlanningSubgraph(
+        planner,
+        questionBank,
+        questionSignalRetriever,
+      ),
+      questionBank,
       learningMemory: new FakeLearningMemory(),
     })
     const threadId = 'quiz-rag-no-evidence-thread'
@@ -199,11 +214,15 @@ describe('Interview Quiz Graph RAG', () => {
   test('Graph 不持有也不调用 answer_evidence Retriever', async () => {
     const planner = new FakeQuizPlanner()
     const questionSignalRetriever = new FakeKnowledgeRetriever()
+    const questionBank = new InMemoryQuestionBank()
     const graph = createInterviewQuizGraph({
       checkpointer: new MemorySaver(),
-      planner,
-      questionSignalRetriever,
-      questionBank: new InMemoryQuestionBank(),
+      planningSubgraph: createQuizPlanningSubgraph(
+        planner,
+        questionBank,
+        questionSignalRetriever,
+      ),
+      questionBank,
       learningMemory: new FakeLearningMemory(),
     })
     const threadId = 'quiz-rag-split-retriever-thread'

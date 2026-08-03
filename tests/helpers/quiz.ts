@@ -9,11 +9,14 @@ import type {
   LearningMemoryContext,
   RoundAttemptInput,
 } from '@/agent/interview-quiz/learning-memory/contracts'
+import type { QuestionBank } from '@/agent/interview-quiz/question-bank/contracts'
 import type {
+  PlannerToolSet,
   QuizPlannerInput,
-  QuizPlanResult,
-} from '@/agent/interview-quiz/planning'
+} from '@/agent/interview-quiz/subgraphs/planning/planner'
+import type { ModelTurn } from '@/agent/react/model-adapter'
 import type {
+  OpenAIResponseFunctionTool,
   OpenAIResponseInputItem,
   OpenAIResponsesExecutor,
 } from '@/clients/openai'
@@ -23,14 +26,19 @@ import type {
   RetrievedChunk,
 } from '@/knowledge/contracts'
 import { MemorySaver } from '@langchain/langgraph'
+import { ok } from 'neverthrow'
 import {
   QuestionType,
   QuizDifficulty,
   QuizStrategy,
 } from '@/agent/interview-quiz/contracts'
 import { createInterviewQuizGraph } from '@/agent/interview-quiz/interview-quiz-graph'
-import { QuizPlanner } from '@/agent/interview-quiz/planning'
 import { InMemoryQuestionBank } from '@/agent/interview-quiz/question-bank/in-memory-question-bank'
+import {
+  createPlanningSubgraph as createPlanningSubgraphImpl,
+} from '@/agent/interview-quiz/subgraphs/planning/graph'
+import { QuizPlanner } from '@/agent/interview-quiz/subgraphs/planning/planner'
+import { KnowledgeToolName } from '@/agent/interview-quiz/tools/knowledge'
 import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
@@ -157,6 +165,10 @@ const unusedKnowledgeRetriever: Pick<KnowledgeRetriever, 'search'> = {
 
 export class FakeQuizPlanner extends QuizPlanner {
   readonly calls: QuizPlannerInput[] = []
+  readonly modelCalls: OpenAIResponseInputItem[][] = []
+  readonly toolCalls: string[] = []
+  private currentInput?: QuizPlannerInput
+  private modelTurn = 0
 
   constructor() {
     super({} as OpenAIResponsesExecutor, {
@@ -166,33 +178,97 @@ export class FakeQuizPlanner extends QuizPlanner {
     })
   }
 
-  override async createRound(
-    input: QuizPlannerInput,
-    options: { signal: AbortSignal },
-  ): Promise<QuizPlanResult> {
-    options.signal.throwIfAborted()
+  override createInitialConversation(input: QuizPlannerInput) {
     this.calls.push(structuredClone(input))
-    const draft = createQuizDraft(input.round)
-    const continuationItems: OpenAIResponseInputItem[] = [{
-      role: 'assistant',
-      content: JSON.stringify(draft),
-    }]
-    const retrievedChunks = [
-      ...input.retrievedChunks,
-      fakeKnowledgeChunk(KnowledgeEvidenceRole.AnswerEvidence),
-    ]
+    this.currentInput = structuredClone(input)
+    this.modelTurn = 0
+    return input.history
+  }
 
+  override getRequiredSkillNames() {
+    // Graph 测试只验证 Loop 和 RAG 数据流；Skill Trace 由真实 Planner 测试覆盖。
+    return []
+  }
+
+  override createToolSet(): PlannerToolSet {
+    const toolCalls = this.toolCalls
     return {
-      ok: true,
-      draft,
-      continuationItems,
-      retrievedChunks,
-      usage: {
-        inputTokens: 1000 + input.round * 100,
-        cachedTokens: input.round === 1 ? 0 : 800,
-        cacheWriteTokens: input.round === 1 ? 900 : 0,
+      definitions: [],
+      executor: {
+        async execute(call, options) {
+          options.signal.throwIfAborted()
+          toolCalls.push(call.callId)
+          return {
+            ok: true as const,
+            callId: call.callId,
+            name: call.name,
+            output: {
+              chunks: [
+                fakeKnowledgeChunk(KnowledgeEvidenceRole.AnswerEvidence),
+              ],
+            },
+          }
+        },
       },
     }
+  }
+
+  override async runModel(input: {
+    history: OpenAIResponseInputItem[]
+    tools: OpenAIResponseFunctionTool[]
+    signal: AbortSignal
+  }): Promise<ModelTurn> {
+    input.signal.throwIfAborted()
+    this.modelCalls.push([...input.history])
+    const plannerInput = this.currentInput
+    if (!plannerInput)
+      throw new Error('Fake planner was not prepared.')
+
+    if (this.modelTurn++ === 0) {
+      return {
+        continuationItems: [],
+        functionCalls: [{
+          callId: 'fake-answer-evidence-call',
+          name: KnowledgeToolName.SearchAnswerEvidence,
+          arguments: JSON.stringify({ query: 'fake answer evidence' }),
+        }],
+        usage: {
+          inputTokens: 1000,
+          cachedTokens: 0,
+          cacheWriteTokens: 900,
+        },
+      }
+    }
+
+    const draft = createQuizDraft(plannerInput.round)
+    const evidenceChunkId = 'fake:answer_evidence'
+    const draftWithEvidence = {
+      ...draft,
+      questions: draft.questions.map(question => ({
+        ...question,
+        sourceChunkIds: [evidenceChunkId],
+      })),
+    }
+
+    return {
+      continuationItems: [{
+        role: 'assistant',
+        content: JSON.stringify(draftWithEvidence),
+      }],
+      functionCalls: [],
+      finalText: JSON.stringify(draftWithEvidence),
+      usage: {
+        inputTokens: 100,
+        cachedTokens: plannerInput.round === 1 ? 0 : 800,
+        cacheWriteTokens: 0,
+      },
+    }
+  }
+
+  override validateDraft(draft: QuizRoundDraft) {
+    // Parent/Graph 测试使用固定题面，重复题干的领域校验由真实 Planner
+    // 单测覆盖；这里仅验证 Loop 的数据流。
+    return ok(draft)
   }
 }
 
@@ -275,6 +351,23 @@ export class FakeLearningMemory implements LearningMemory {
   }
 }
 
+export function createQuizPlanningSubgraph(
+  planner: Pick<QuizPlanner, | 'createInitialConversation'
+  | 'createToolSet'
+  | 'runModel'
+  | 'getRequiredSkillNames'
+  | 'validateDraft'
+  | 'materializeRoundPlan'>,
+  questionBank: Pick<QuestionBank, 'findRecentStems'>,
+  questionSignalRetriever: Pick<KnowledgeRetriever, 'search'>,
+) {
+  return createPlanningSubgraphImpl({
+    planner,
+    questionBank,
+    questionSignalRetriever,
+  })
+}
+
 export function createQuizGraphFixture(options: {
   learningMemory?: LearningMemory
   checkpointer?: MemorySaver
@@ -283,10 +376,14 @@ export function createQuizGraphFixture(options: {
   const knowledgeRetriever = new FakeKnowledgeRetriever()
   const questionBank = new InMemoryQuestionBank()
   const learningMemory = options.learningMemory ?? new FakeLearningMemory()
+  const planningSubgraph = createQuizPlanningSubgraph(
+    planner,
+    questionBank,
+    knowledgeRetriever,
+  )
   const graph = createInterviewQuizGraph({
     checkpointer: options.checkpointer ?? new MemorySaver(),
-    planner,
-    questionSignalRetriever: knowledgeRetriever,
+    planningSubgraph,
     jdRetriever: knowledgeRetriever,
     questionBank,
     learningMemory,

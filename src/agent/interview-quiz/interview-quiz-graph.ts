@@ -2,11 +2,17 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph'
 import type { Result } from 'neverthrow'
 import type { QuizRoundRecord } from './contracts'
 import type { InterviewQuizError } from './errors'
-import type { QuizPlanner } from './planning'
-import type { JdContext, MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
+import type { InterviewQuizState, InterviewQuizUpdate, QuizRoundContext } from './state'
+import type {
+  PlanningSubgraph,
+} from './subgraphs/planning/graph'
+import type {
+  PlanningInput,
+  PlanningState,
+} from './subgraphs/planning/state'
+import type { MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
 import type {
   LearningMemory,
-  LearningMemoryContext,
   RoundAttemptInput,
 } from '@/agent/interview-quiz/learning-memory/contracts'
 import type { QuestionBank } from '@/agent/interview-quiz/question-bank/contracts'
@@ -21,7 +27,7 @@ import {
 import { err, ok } from 'neverthrow'
 import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
 import { extractJdFocus } from '@/agent/interview-quiz/jd/extract-jd-focus'
-import { KnowledgeEvidenceRole, KnowledgeSourceType } from '@/knowledge/contracts'
+import { KnowledgeSourceType } from '@/knowledge/contracts'
 import {
   InterviewQuizStatus,
   QuizCompletionReason,
@@ -39,14 +45,16 @@ import {
   QuizNextRoundDecisionSchema,
   validateSubmission,
 } from './execution'
-import { MAX_FORBIDDEN_QUESTION_STEMS } from './planning'
-import { InterviewQuizStateSchema } from './state'
+import {
+
+  InterviewQuizStateSchema,
+
+} from './state'
 
 export interface CreateInterviewQuizGraphOptions {
   checkpointer: BaseCheckpointSaver
-  planner: Pick<QuizPlanner, 'createRound' | 'materializeRoundPlan'>
-  /** Graph 首次固定预取 question_signal；追加检索由 Planner Tool 负责。 */
-  questionSignalRetriever: Pick<KnowledgeRetriever, 'search'>
+  /** 一轮规划的完整子图；Parent 不知道内部三个 Node。 */
+  planningSubgraph: Pick<PlanningSubgraph, 'invoke'>
   /** 用户 JD 只从 owner-scoped 本地 Store 精确读取。 */
   jdRetriever?: Pick<KnowledgeRetriever, 'loadDocument'>
   /** 公共市场 JD 通过共享 Catalog 读取，不使用 learner owner。 */
@@ -93,33 +101,75 @@ function buildRoundMessage(input: {
 }
 
 /**
- * Query 先由确定性状态拼出来，不额外调用一个 Query Planner 模型。
- * 这样用户答错的知识点能稳定进入下一轮检索。
+ * Parent State → Planning Subgraph State 的显式投影。
+ *
+ * Mapper 不访问依赖、不做副作用，也不把完整 Parent State 传给子图。
  */
-function buildKnowledgeQuery(state: {
-  roundContext: {
-    difficulty: QuizDifficulty
-    strategy: QuizStrategy
-  } | null
-  rounds: Array<{ result: { wrongKnowledgePoints: string[] } }>
-  memoryContext: LearningMemoryContext
-  jdContext: JdContext | null
-}) {
-  const wrongKnowledgePoints = state.roundContext?.strategy
-    === QuizStrategy.Remediate
-    ? state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []
-    : []
-  const focusKnowledgePoints = wrongKnowledgePoints.length > 0
-    ? wrongKnowledgePoints
-    : state.jdContext?.focusKnowledgePoints.length
-      ? state.jdContext.focusKnowledgePoints
-      : state.memoryContext.weakKnowledgePoints
-  const focus = focusKnowledgePoints.length > 0
-    ? focusKnowledgePoints.join(' ')
-    : 'Agent 工程 Tool Calling LangGraph Context Memory'
-  const difficulty = state.roundContext?.difficulty ?? QuizDifficulty.Foundation
+export function toPlanningInput(
+  state: InterviewQuizState,
+  roundContext: QuizRoundContext,
+): PlanningInput {
+  const completedQuestionStems = state.rounds.flatMap(record => (
+    record.plan.questions.map(question => question.stem)
+  ))
 
-  return `${difficulty} ${focus} 核心概念 常见误区`
+  return {
+    threadId: state.threadId,
+    roundContext: { ...roundContext },
+    modelHistory: [...state.modelHistory],
+    completedQuestionStems,
+    previousWrongKnowledgePoints: [
+      ...(state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []),
+    ],
+    memoryContext: {
+      weakKnowledgePoints: [
+        ...state.memoryContext.weakKnowledgePoints,
+      ],
+    },
+    jdContext: state.jdContext
+      ? {
+          ...state.jdContext,
+          focusKnowledgePoints: [
+            ...state.jdContext.focusKnowledgePoints,
+          ],
+        }
+      : null,
+  }
+}
+
+/**
+ * Planning Subgraph State → Parent State Update 的显式投影。
+ *
+ * Parent 的 modelHistory 有 Reducer，因此这里只回写 continuationItems，
+ * 不能把子图收到的完整 modelHistory 再追加一遍。
+ */
+export function toParentPlanningUpdate(
+  output: PlanningState,
+): InterviewQuizUpdate {
+  if (output.error) {
+    return {
+      status: InterviewQuizStatus.Failed,
+      error: output.error,
+    }
+  }
+
+  if (!output.currentPlan) {
+    return {
+      status: InterviewQuizStatus.Failed,
+      error: createInterviewQuizError(
+        InterviewQuizErrorCode.RoundPlanMissing,
+      ),
+    }
+  }
+
+  return {
+    currentPlan: output.currentPlan,
+    modelHistory: output.continuationItems,
+    currentModelUsage: output.modelUsage,
+    retrievedChunks: output.retrievedChunks,
+    submission: null,
+    status: InterviewQuizStatus.Planning,
+  }
 }
 
 /**
@@ -194,7 +244,6 @@ export function createInterviewQuizGraph(
         roundContext,
         modelHistory: [buildRoundMessage(roundContext)],
         retrievedChunks: [],
-        questionBankStems: [],
         status: InterviewQuizStatus.Planning,
       }
     })
@@ -296,7 +345,7 @@ export function createInterviewQuizGraph(
         }
       }
     })
-    .addNode('load_question_history', async (state, { signal }) => {
+    .addNode('planning', async (state, { signal }) => {
       if (!state.roundContext) {
         return {
           status: InterviewQuizStatus.Failed,
@@ -306,120 +355,18 @@ export function createInterviewQuizGraph(
         }
       }
 
-      const focusKnowledgePoints = state.roundContext.strategy
-        === QuizStrategy.Remediate
-        ? state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []
-        : state.memoryContext.weakKnowledgePoints
-
       try {
-        return {
-          questionBankStems: await options.questionBank.findRecentStems({
-            difficulty: state.roundContext.difficulty,
-            knowledgePoints: focusKnowledgePoints,
-            limit: 30,
+        const output = await options.planningSubgraph.invoke(
+          toPlanningInput(state, state.roundContext),
+          {
             signal,
-          }),
-          status: InterviewQuizStatus.Planning,
-        }
-      }
-      catch {
-        return {
-          status: InterviewQuizStatus.Failed,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.QuestionBankReadFailed,
-          ),
-        }
-      }
-    })
-    .addNode('retrieve_question_signals', async (state, { signal }) => {
-      if (!state.roundContext) {
-        return {
-          status: InterviewQuizStatus.Failed,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.RoundContextMissing,
-          ),
-        }
-      }
-
-      try {
-        const query = buildKnowledgeQuery(state)
-        const questionSignals = await options.questionSignalRetriever.search({
-          query,
-          limit: 4,
-          filter: {
-            evidenceRoles: [KnowledgeEvidenceRole.QuestionSignal],
-            ownerId: null,
+            // Planner Loop 每个 Tool round 有多个显式 Node，不能使用
+            // LangGraph 默认的 25-step 上限。
+            recursionLimit: 100,
           },
-          signal,
-        })
-
-        return {
-          retrievedChunks: questionSignals,
-          status: InterviewQuizStatus.Planning,
-        }
-      }
-      catch {
-        return {
-          status: InterviewQuizStatus.Failed,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.KnowledgeRetrievalFailed,
-          ),
-        }
-      }
-    })
-    .addNode('plan_execute', async (state, { signal }) => {
-      if (!state.roundContext) {
-        return {
-          status: InterviewQuizStatus.Failed,
-          error: createInterviewQuizError(
-            InterviewQuizErrorCode.RoundContextMissing,
-          ),
-        }
-      }
-
-      const currentThreadStems = state.rounds.flatMap(record => (
-        record.plan.questions.map(question => question.stem)
-      ))
-      const plannerInput = {
-        history: state.modelHistory,
-        ...state.roundContext,
-        previousQuestionStems: [...new Set([
-          ...currentThreadStems,
-          ...state.questionBankStems,
-        ])].slice(0, MAX_FORBIDDEN_QUESTION_STEMS),
-        retrievedChunks: state.retrievedChunks,
-        memoryContext: state.memoryContext,
-        jdContext: state.jdContext,
-      }
-
-      try {
-        const result = await options.planner.createRound(
-          plannerInput,
-          { signal },
         )
 
-        if (!result.ok) {
-          return {
-            status: InterviewQuizStatus.Failed,
-            error: result.error,
-          }
-        }
-
-        return {
-          modelHistory: result.continuationItems,
-          retrievedChunks: result.retrievedChunks,
-          currentPlan: options.planner.materializeRoundPlan({
-            threadId: state.threadId,
-            plannerInput: {
-              ...plannerInput,
-              retrievedChunks: result.retrievedChunks,
-            },
-            draft: result.draft,
-          }),
-          submission: null,
-          currentModelUsage: result.usage ?? null,
-          status: InterviewQuizStatus.Planning,
-        }
+        return toParentPlanningUpdate(output)
       }
       catch {
         return {
@@ -608,7 +555,6 @@ export function createInterviewQuizGraph(
         submission: null,
         currentModelUsage: null,
         retrievedChunks: [],
-        questionBankStems: [],
         status: InterviewQuizStatus.Planning,
       }
     })
@@ -626,17 +572,9 @@ export function createInterviewQuizGraph(
     .addConditionalEdges('load_jd_context', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
-        : 'load_question_history'
+        : 'planning'
     ))
-    .addConditionalEdges('load_question_history', state => (
-      state.status === InterviewQuizStatus.Failed
-        ? END
-        : 'retrieve_question_signals'
-    ))
-    .addConditionalEdges('retrieve_question_signals', state => (
-      state.status === InterviewQuizStatus.Failed ? END : 'plan_execute'
-    ))
-    .addConditionalEdges('plan_execute', state => (
+    .addConditionalEdges('planning', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
         : 'persist_questions'
@@ -664,7 +602,7 @@ export function createInterviewQuizGraph(
     .addConditionalEdges('wait_next_round', state => (
       state.status === InterviewQuizStatus.Failed ? END : 'replan'
     ))
-    .addEdge('replan', 'load_question_history')
+    .addEdge('replan', 'planning')
     .addEdge('finish', END)
     .compile({ checkpointer: options.checkpointer })
 }
