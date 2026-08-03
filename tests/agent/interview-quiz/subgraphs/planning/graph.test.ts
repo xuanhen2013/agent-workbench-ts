@@ -17,7 +17,10 @@ import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from '@/knowledge/contracts'
-import { FakeQuizPlanner } from '../../../../helpers/quiz'
+import {
+  FakeQuizPlanner,
+  TEST_QUIZ_CATEGORY,
+} from '../../../../helpers/quiz'
 
 class RecordingQuestionHistory {
   readonly calls: FindRecentStemsInput[] = []
@@ -77,6 +80,7 @@ function createInput(
       difficulty: QuizDifficulty.Foundation,
       strategy: QuizStrategy.Initial,
     },
+    category: TEST_QUIZ_CATEGORY,
     modelHistory: [],
     completedQuestionStems: [],
     previousWrongKnowledgePoints: [],
@@ -120,9 +124,9 @@ describe('Planning Subgraph', () => {
     const output = await fixture.graph.invoke(createInput())
 
     expect(output.error).toBeNull()
-    expect(output.currentPlan).not.toBeNull()
-    expect(output.currentPlan?.questions).toHaveLength(5)
-    expect(output.currentPlan?.round).toBe(1)
+    expect(output.currentSection).not.toBeNull()
+    expect(output.currentSection?.questions).toHaveLength(5)
+    expect(output.currentSection?.category).toEqual(TEST_QUIZ_CATEGORY)
     expect(output.continuationItems).toHaveLength(1)
     expect(output.modelUsage).toMatchObject({
       inputTokens: 1100,
@@ -254,7 +258,7 @@ describe('Planning Subgraph', () => {
         validateDraft() {
           throw new Error('must not validate failed plan')
         },
-        materializeRoundPlan() {
+        materializeSectionPlan() {
           throw new Error('must not materialize failed plan')
         },
       },
@@ -310,6 +314,6 @@ describe('Planning Subgraph', () => {
     expect(planner.calls[1]?.previousQuestionStems).not.toContain(
       'history-from-call-1',
     )
-    expect(second.currentPlan?.round).toBe(2)
+    expect(second.currentSection?.category).toEqual(TEST_QUIZ_CATEGORY)
   })
 })

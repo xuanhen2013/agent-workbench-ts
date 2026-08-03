@@ -1,6 +1,10 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph'
 import type { Result } from 'neverthrow'
-import type { QuizRoundRecord } from './contracts'
+import type {
+  QuizCategory,
+  QuizModelUsage,
+  QuizRoundRecord,
+} from './contracts'
 import type { InterviewQuizError } from './errors'
 import type { InterviewQuizState, InterviewQuizUpdate, QuizRoundContext } from './state'
 import type {
@@ -28,6 +32,7 @@ import { err, ok } from 'neverthrow'
 import { SelectedJdSource } from '@/agent/interview-quiz/jd/contracts'
 import { extractJdFocus } from '@/agent/interview-quiz/jd/extract-jd-focus'
 import { KnowledgeSourceType } from '@/knowledge/contracts'
+import { selectQuizCategories } from './categories'
 import {
   InterviewQuizStatus,
   QuizCompletionReason,
@@ -78,12 +83,13 @@ function buildRoundMessage(input: {
   difficulty: QuizDifficulty
   strategy: QuizStrategy
   correctCount?: number
+  total?: number
   wrongKnowledgePoints?: string[]
 }): OpenAIResponseInputItem {
   const feedback = input.correctCount === undefined
     ? '这是第一轮，没有历史答题结果。'
     : [
-        `上一轮得分：${input.correctCount}/5。`,
+        `上一轮得分：${input.correctCount}/${input.total ?? 0}。`,
         input.wrongKnowledgePoints?.length
           ? `错误知识点：${input.wrongKnowledgePoints.join('、')}。`
           : '上一轮全部答对。',
@@ -108,18 +114,25 @@ function buildRoundMessage(input: {
 export function toPlanningInput(
   state: InterviewQuizState,
   roundContext: QuizRoundContext,
+  category: QuizCategory,
 ): PlanningInput {
   const completedQuestionStems = state.rounds.flatMap(record => (
-    record.plan.questions.map(question => question.stem)
-  ))
+    record.plan.sections.flatMap(section => (
+      section.questions.map(question => question.stem)
+    ))
+  )).concat(state.plannedSections.flatMap(section => (
+    section.questions.map(question => question.stem)
+  )))
+  const previousSectionResult = state.rounds.at(-1)?.result.sectionResults.find(result => result.categoryId === category.categoryId)
 
   return {
     threadId: state.threadId,
     roundContext: { ...roundContext },
+    category: structuredClone(category),
     modelHistory: [...state.modelHistory],
     completedQuestionStems,
     previousWrongKnowledgePoints: [
-      ...(state.rounds.at(-1)?.result.wrongKnowledgePoints ?? []),
+      ...(previousSectionResult?.wrongKnowledgePoints ?? []),
     ],
     memoryContext: {
       weakKnowledgePoints: [
@@ -145,6 +158,7 @@ export function toPlanningInput(
  */
 export function toParentPlanningUpdate(
   output: PlanningState,
+  currentModelUsage: QuizModelUsage | null,
 ): InterviewQuizUpdate {
   if (output.error) {
     return {
@@ -153,7 +167,7 @@ export function toParentPlanningUpdate(
     }
   }
 
-  if (!output.currentPlan) {
+  if (!output.currentSection) {
     return {
       status: InterviewQuizStatus.Failed,
       error: createInterviewQuizError(
@@ -163,12 +177,28 @@ export function toParentPlanningUpdate(
   }
 
   return {
-    currentPlan: output.currentPlan,
+    currentSection: output.currentSection,
     modelHistory: output.continuationItems,
-    currentModelUsage: output.modelUsage,
+    currentModelUsage: addModelUsage(currentModelUsage, output.modelUsage),
     retrievedChunks: output.retrievedChunks,
     submission: null,
     status: InterviewQuizStatus.Planning,
+  }
+}
+
+function addModelUsage(
+  current: QuizModelUsage | null,
+  incoming: QuizModelUsage | null,
+): QuizModelUsage | null {
+  if (!current)
+    return incoming
+  if (!incoming)
+    return current
+
+  return {
+    inputTokens: current.inputTokens + incoming.inputTokens,
+    cachedTokens: current.cachedTokens + incoming.cachedTokens,
+    cacheWriteTokens: current.cacheWriteTokens + incoming.cacheWriteTokens,
   }
 }
 
@@ -183,12 +213,18 @@ export function toRoundAttemptInput(input: {
   completedAt: string
 }): Result<RoundAttemptInput, InterviewQuizError> {
   const { learnerId, threadId, record, completedAt } = input
+  const questionResults = record.result.sectionResults.flatMap(
+    section => section.questionResults,
+  )
   const resultByQuestionId = new Map(
-    record.result.questionResults.map(result => [result.questionId, result]),
+    questionResults.map(result => [result.questionId, result]),
+  )
+  const plannedQuestions = record.plan.sections.flatMap(
+    section => section.questions,
   )
   if (
-    resultByQuestionId.size !== record.result.questionResults.length
-    || record.plan.questions.length !== record.result.questionResults.length
+    resultByQuestionId.size !== questionResults.length
+    || plannedQuestions.length !== questionResults.length
   ) {
     return err(createInterviewQuizError(
       InterviewQuizErrorCode.MemoryAttemptInvalid,
@@ -196,7 +232,7 @@ export function toRoundAttemptInput(input: {
   }
 
   const questions: RoundAttemptInput['questions'] = []
-  for (const question of record.plan.questions) {
+  for (const question of plannedQuestions) {
     const result = resultByQuestionId.get(question.questionId)
     if (!result || !question.bankQuestionId) {
       return err(createInterviewQuizError(
@@ -243,6 +279,14 @@ export function createInterviewQuizGraph(
       return {
         roundContext,
         modelHistory: [buildRoundMessage(roundContext)],
+        categories: [],
+        activeCategories: [],
+        categoryCursor: 0,
+        currentSection: null,
+        plannedSections: [],
+        currentPlan: null,
+        submission: null,
+        currentModelUsage: null,
         retrievedChunks: [],
         status: InterviewQuizStatus.Planning,
       }
@@ -345,6 +389,19 @@ export function createInterviewQuizGraph(
         }
       }
     })
+    .addNode('select_categories', (state) => {
+      const categories = selectQuizCategories(state.jdContext)
+      return {
+        categories,
+        activeCategories: categories,
+        categoryCursor: 0,
+        currentSection: null,
+        plannedSections: [],
+        currentPlan: null,
+        currentModelUsage: null,
+        status: InterviewQuizStatus.Planning,
+      }
+    })
     .addNode('planning', async (state, { signal }) => {
       if (!state.roundContext) {
         return {
@@ -355,9 +412,19 @@ export function createInterviewQuizGraph(
         }
       }
 
+      const category = state.activeCategories[state.categoryCursor]
+      if (!category) {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundContextMissing,
+          ),
+        }
+      }
+
       try {
         const output = await options.planningSubgraph.invoke(
-          toPlanningInput(state, state.roundContext),
+          toPlanningInput(state, state.roundContext, category),
           {
             signal,
             // Planner Loop 每个 Tool round 有多个显式 Node，不能使用
@@ -366,7 +433,7 @@ export function createInterviewQuizGraph(
           },
         )
 
-        return toParentPlanningUpdate(output)
+        return toParentPlanningUpdate(output, state.currentModelUsage)
       }
       catch {
         return {
@@ -377,8 +444,25 @@ export function createInterviewQuizGraph(
         }
       }
     })
+    .addNode('collect_section', (state) => {
+      if (!state.currentSection) {
+        return {
+          status: InterviewQuizStatus.Failed,
+          error: createInterviewQuizError(
+            InterviewQuizErrorCode.RoundPlanMissing,
+          ),
+        }
+      }
+
+      return {
+        plannedSections: [...state.plannedSections, state.currentSection],
+        categoryCursor: state.categoryCursor + 1,
+        currentSection: null,
+        status: InterviewQuizStatus.Planning,
+      }
+    })
     .addNode('persist_questions', async (state, { signal }) => {
-      if (!state.currentPlan) {
+      if (!state.roundContext || state.plannedSections.length === 0) {
         return {
           status: InterviewQuizStatus.Failed,
           error: createInterviewQuizError(
@@ -388,9 +472,14 @@ export function createInterviewQuizGraph(
       }
 
       try {
+        const currentPlan = {
+          reviewId: `${state.threadId}:round:${state.roundContext.round}:review`,
+          ...state.roundContext,
+          sections: state.plannedSections,
+        }
         return {
           currentPlan: await options.questionBank.savePlan(
-            state.currentPlan,
+            currentPlan,
             { signal },
           ),
           status: InterviewQuizStatus.WaitingForAnswers,
@@ -543,14 +632,32 @@ export function createInterviewQuizGraph(
           ? QuizStrategy.Advance
           : QuizStrategy.Remediate,
       }
+      const wrongCategoryIds = new Set(
+        lastRound.result.sectionResults
+          .filter(section => !section.allCorrect)
+          .map(section => section.categoryId),
+      )
+      const activeCategories = lastRound.result.allCorrect
+        ? state.categories
+        : state.categories.filter(category => (
+            wrongCategoryIds.has(category.categoryId)
+          ))
 
       return {
         roundContext,
         modelHistory: [buildRoundMessage({
           ...roundContext,
           correctCount: lastRound.result.correctCount,
+          total: lastRound.plan.sections.reduce(
+            (total, section) => total + section.questions.length,
+            0,
+          ),
           wrongKnowledgePoints: lastRound.result.wrongKnowledgePoints,
         })],
+        activeCategories,
+        categoryCursor: 0,
+        currentSection: null,
+        plannedSections: [],
         currentPlan: null,
         submission: null,
         currentModelUsage: null,
@@ -572,12 +679,20 @@ export function createInterviewQuizGraph(
     .addConditionalEdges('load_jd_context', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
-        : 'planning'
+        : 'select_categories'
     ))
+    .addEdge('select_categories', 'planning')
     .addConditionalEdges('planning', state => (
       state.status === InterviewQuizStatus.Failed
         ? END
-        : 'persist_questions'
+        : 'collect_section'
+    ))
+    .addConditionalEdges('collect_section', state => (
+      state.status === InterviewQuizStatus.Failed
+        ? END
+        : state.categoryCursor < state.activeCategories.length
+          ? 'planning'
+          : 'persist_questions'
     ))
     .addConditionalEdges('persist_questions', state => (
       state.status === InterviewQuizStatus.Failed

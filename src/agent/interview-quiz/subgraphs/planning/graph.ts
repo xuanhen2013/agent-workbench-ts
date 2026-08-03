@@ -68,9 +68,7 @@ function buildKnowledgeQuery(state: PlanningState) {
 
   const focusKnowledgePoints = wrongKnowledgePoints.length > 0
     ? wrongKnowledgePoints
-    : state.jdContext?.focusKnowledgePoints.length
-      ? state.jdContext.focusKnowledgePoints
-      : state.memoryContext.weakKnowledgePoints
+    : state.category.knowledgePoints
 
   const focus = focusKnowledgePoints.length > 0
     ? focusKnowledgePoints.join(' ')
@@ -94,6 +92,7 @@ function buildPlannerInput(state: PlanningState): QuizPlannerInput {
   return {
     history: state.modelHistory,
     ...state.roundContext,
+    category: state.category,
     previousQuestionStems: uniqueBoundedStems(state),
     retrievedChunks: state.retrievedChunks,
     memoryContext: state.memoryContext,
@@ -314,8 +313,9 @@ export function createPlanningSubgraph(
     .addNode('load_question_history', async (state, { signal }) => {
       const focusKnowledgePoints
         = state.roundContext.strategy === QuizStrategy.Remediate
+          && state.previousWrongKnowledgePoints.length > 0
           ? state.previousWrongKnowledgePoints
-          : state.memoryContext.weakKnowledgePoints
+          : state.category.knowledgePoints
 
       try {
         return {
@@ -359,7 +359,14 @@ export function createPlanningSubgraph(
     })
     .addNode('plan_round', async (state, runtime) => {
       try {
-        const runId = `${state.threadId}:round:${state.roundContext.round}:planner`
+        const runId = [
+          state.threadId,
+          'round',
+          state.roundContext.round,
+          'category',
+          state.category.categoryId,
+          'planner',
+        ].join(':')
         const loopState = await toolLoop.invoke({
           domainState: {
             plannerInput: buildPlannerInput(state),
@@ -398,7 +405,7 @@ export function createPlanningSubgraph(
         }
         return {
           candidateDraft: output,
-          currentPlan: options.planner.materializeRoundPlan({
+          currentSection: options.planner.materializeSectionPlan({
             threadId: state.threadId,
             plannerInput,
             draft: output,

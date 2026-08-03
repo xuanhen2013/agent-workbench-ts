@@ -100,22 +100,23 @@ describe('Interview Quiz Graph QuestionBank', () => {
     const request = findRoundRequest(snapshot)
     const currentPlan = snapshot.values.currentPlan as QuizRoundPlan
 
-    expect(questionBank.events).toEqual(['read', 'save'])
+    expect(questionBank.events).toEqual(['read', 'read', 'read', 'save'])
     expect(questionBank.findInputs[0]).toMatchObject({
       difficulty: QuizDifficulty.Foundation,
-      knowledgePoints: [],
+      knowledgePoints: ['LangGraph', 'Multi-Agent'],
       limit: 30,
     })
     expect(planner.calls[0]?.previousQuestionStems)
-      .toContain(historicalPlan.questions[0]!.stem)
+      .toContain(historicalPlan.sections[0]!.questions[0]!.stem)
     expect(planner.calls[0]?.previousQuestionStems.length)
       .toBeLessThanOrEqual(30)
-    expect(currentPlan.questions.every(question => question.bankQuestionId))
-      .toBe(true)
+    expect(currentPlan.sections.every(section => (
+      section.questions.every(question => question.bankQuestionId)
+    ))).toBe(true)
     expect(JSON.stringify(request)).not.toContain('bankQuestionId')
     expect(await questionBank.count({
       signal: new AbortController().signal,
-    })).toBe(5)
+    })).toBe(15)
   })
 
   test('题库读取和保存失败映射成 Workflow 稳定错误', async () => {

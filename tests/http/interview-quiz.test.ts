@@ -42,7 +42,8 @@ describe('Interview Quiz API', () => {
 
     expect(createdResponse.status).toBe(201)
     expect(created.status).toBe('needs_answers')
-    expect(created.waitingQuestions?.questions).toHaveLength(5)
+    expect(created.waitingQuestions?.sections).toHaveLength(3)
+    expect(created.waitingQuestions?.questionCount).toBe(15)
     expect(JSON.stringify(created)).not.toContain('correctOptionIds')
     expect(JSON.stringify(created)).not.toContain('explanation')
     expect(JSON.stringify(created)).not.toContain('bankQuestionId')
@@ -89,7 +90,7 @@ describe('Interview Quiz API', () => {
 
     expect(secondRound.status).toBe('needs_answers')
     expect(secondRound.waitingQuestions?.round).toBe(2)
-    expect(planner.calls).toHaveLength(2)
+    expect(planner.calls).toHaveLength(6)
 
     const secondQuestions = secondRound.waitingQuestions
     if (!secondQuestions)
@@ -108,7 +109,7 @@ describe('Interview Quiz API', () => {
     expect(completed.status).toBe('completed')
     expect(completed.results).toHaveLength(2)
     expect(completed.waitingResult).toBeUndefined()
-    expect(planner.calls).toHaveLength(2)
+    expect(planner.calls).toHaveLength(6)
   })
 
   test('非法配置和错误阶段的 next 返回稳定 HTTP 错误', async () => {

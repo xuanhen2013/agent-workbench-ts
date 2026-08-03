@@ -1,4 +1,9 @@
-import type { QuizModelUsage, QuizRoundDraft, QuizRoundPlan } from '../../contracts'
+import type {
+  QuizCategory,
+  QuizModelUsage,
+  QuizRoundDraft,
+  QuizSectionPlan,
+} from '../../contracts'
 import type { InterviewQuizError } from '../../errors'
 import type { JdContext } from '../../jd/contracts'
 import type { LearningMemoryContext } from '../../learning-memory/contracts'
@@ -17,6 +22,7 @@ import { z } from 'zod/v4'
 export interface PlanningInput {
   threadId: string
   roundContext: QuizRoundContext
+  category: QuizCategory
   modelHistory: OpenAIResponseInputItem[]
   completedQuestionStems: string[]
   previousWrongKnowledgePoints: string[]
@@ -28,6 +34,7 @@ export const PlanningStateSchema = new StateSchema({
   // Parent 显式输入
   threadId: z.string().min(1),
   roundContext: z.custom<QuizRoundContext>(),
+  category: z.custom<QuizCategory>(),
   modelHistory: z.array(z.custom<OpenAIResponseInputItem>()),
   completedQuestionStems: z.array(z.string()),
   previousWrongKnowledgePoints: z.array(z.string()),
@@ -41,7 +48,7 @@ export const PlanningStateSchema = new StateSchema({
   // 通过 ToolLoopGraph 得到的领域输出；不保存 ToolLoop 私有协议状态。
   candidateDraft: z.custom<QuizRoundDraft>().nullable().default(null),
 
-  currentPlan: z.custom<QuizRoundPlan>().nullable().default(null),
+  currentSection: z.custom<QuizSectionPlan>().nullable().default(null),
   continuationItems: z.array(
     z.custom<OpenAIResponseInputItem>(),
   ).default(() => []),

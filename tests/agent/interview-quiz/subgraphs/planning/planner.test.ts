@@ -35,7 +35,10 @@ import {
 } from '@/knowledge/contracts'
 import { SkillName } from '@/skills/contracts'
 import { SkillToolName } from '@/tools/skill'
-import { createQuizDraft as createRawQuizDraft } from '../../../../helpers/quiz'
+import {
+  createQuizDraft as createRawQuizDraft,
+  TEST_QUIZ_CATEGORY,
+} from '../../../../helpers/quiz'
 
 const skillCatalog: readonly SkillCatalogEntry[] = [{
   name: SkillName.QuestionAuthoring,
@@ -309,6 +312,7 @@ function validPlannerInput(): QuizPlannerInput {
     round: 2,
     difficulty: QuizDifficulty.Intermediate,
     strategy: QuizStrategy.Advance,
+    category: TEST_QUIZ_CATEGORY,
     previousQuestionStems: [],
     retrievedChunks: [],
     memoryContext: { weakKnowledgePoints: [] },
@@ -363,6 +367,7 @@ async function runPlannerGraph(
       difficulty: input.difficulty,
       strategy: input.strategy,
     },
+    category: input.category,
     modelHistory: input.history,
     completedQuestionStems: input.previousQuestionStems,
     previousWrongKnowledgePoints: [],
@@ -385,7 +390,7 @@ function expectPlannerError(
   code: InterviewQuizErrorCode,
 ) {
   expect(result.error?.code).toBe(code)
-  expect(result.currentPlan).toBeNull()
+  expect(result.currentSection).toBeNull()
 }
 
 describe('QuizPlanner', () => {
@@ -957,7 +962,7 @@ describe('QuizPlanner', () => {
       expect(invalid.error.code).toBe(InterviewQuizErrorCode.UnknownSourceChunkId)
   })
 
-  test('materialize 使用 threadId 与 round 生成确定且唯一的 ID', () => {
+  test('materialize 使用 threadId、round 与 category 生成确定且唯一的 ID', () => {
     const planner = createPlanner([])
     const input = {
       threadId: 'thread-123',
@@ -965,12 +970,15 @@ describe('QuizPlanner', () => {
       draft: createQuizDraft(2),
     }
 
-    const firstPlan = planner.materializeRoundPlan(input)
-    const retriedPlan = planner.materializeRoundPlan(input)
-    const questionIds = firstPlan.questions.map(question => question.questionId)
+    const firstSection = planner.materializeSectionPlan(input)
+    const retriedSection = planner.materializeSectionPlan(input)
+    const questionIds = firstSection.questions.map(question => question.questionId)
 
-    expect(retriedPlan).toEqual(firstPlan)
-    expect(firstPlan.reviewId).toBe('thread-123:round:2:review')
+    expect(retriedSection).toEqual(firstSection)
+    expect(firstSection.category).toEqual(TEST_QUIZ_CATEGORY)
+    expect(questionIds[0]).toContain(
+      'thread-123:round:2:category:orchestration',
+    )
     expect(new Set(questionIds).size).toBe(5)
   })
 })

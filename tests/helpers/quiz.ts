@@ -1,4 +1,5 @@
 import type {
+  QuizCategory,
   QuizRoundDraft,
   QuizRoundPlan,
 } from '@/agent/interview-quiz/contracts'
@@ -27,6 +28,7 @@ import type {
 } from '@/knowledge/contracts'
 import { MemorySaver } from '@langchain/langgraph'
 import { ok } from 'neverthrow'
+import { selectQuizCategories } from '@/agent/interview-quiz/categories'
 import {
   QuestionType,
   QuizDifficulty,
@@ -45,6 +47,7 @@ import {
 } from '@/knowledge/contracts'
 
 export const TEST_LEARNER_ID = '00000000-0000-4000-8000-000000000001'
+export const TEST_QUIZ_CATEGORY = selectQuizCategories(null)[0]!
 
 /** 与 JD 无关的 HTTP 测试使用；06E 测试会传入真实 InMemory Importer。 */
 export const fakeImportJdDocument: ImportJdDocument = async (
@@ -61,14 +64,18 @@ export const fakeImportJdDocument: ImportJdDocument = async (
 
 export function createQuizDraft(
   round = 1,
+  category?: QuizCategory,
 ): QuizRoundDraft {
-  return {
+  const roundLabel = category
+    ? `第 ${round} 轮（${category.categoryId}）`
+    : `第 ${round} 轮`
+  const draft: QuizRoundDraft = {
     questions: [
       {
         type: QuestionType.Single,
         topic: 'LangGraph',
         knowledgePoint: 'StateGraph',
-        stem: `第 ${round} 轮：StateGraph 中 Node 的主要职责是什么？`,
+        stem: `${roundLabel}：StateGraph 中 Node 的主要职责是什么？`,
         options: [
           { optionId: 'A', text: '读取 State 并返回局部更新' },
           { optionId: 'B', text: '直接修改浏览器 DOM' },
@@ -82,7 +89,7 @@ export function createQuizDraft(
         type: QuestionType.Single,
         topic: 'Tool Calling',
         knowledgePoint: 'tool schema',
-        stem: `第 ${round} 轮：Tool Schema 主要约束什么？`,
+        stem: `${roundLabel}：Tool Schema 主要约束什么？`,
         options: [
           { optionId: 'A', text: '工具输入结构' },
           { optionId: 'B', text: '网页配色' },
@@ -96,7 +103,7 @@ export function createQuizDraft(
         type: QuestionType.Multiple,
         topic: 'Harness',
         knowledgePoint: 'reliability',
-        stem: `第 ${round} 轮：Agent Harness 常见的可靠性能力有哪些？`,
+        stem: `${roundLabel}：Agent Harness 常见的可靠性能力有哪些？`,
         options: [
           { optionId: 'A', text: '超时' },
           { optionId: 'B', text: '重试' },
@@ -110,7 +117,7 @@ export function createQuizDraft(
         type: QuestionType.Single,
         topic: 'Context',
         knowledgePoint: 'history',
-        stem: `第 ${round} 轮：追加式 History 对 RePlan 有什么作用？`,
+        stem: `${roundLabel}：追加式 History 对 RePlan 有什么作用？`,
         options: [
           { optionId: 'A', text: '保留之前 Plan 和反馈' },
           { optionId: 'B', text: '强制清空上下文' },
@@ -124,7 +131,7 @@ export function createQuizDraft(
         type: QuestionType.Single,
         topic: 'Memory',
         knowledgePoint: 'checkpointer',
-        stem: `第 ${round} 轮：Checkpointer 主要保存哪类数据？`,
+        stem: `${roundLabel}：Checkpointer 主要保存哪类数据？`,
         options: [
           { optionId: 'A', text: '当前 Thread 的执行状态' },
           { optionId: 'B', text: '模型训练权重' },
@@ -135,6 +142,19 @@ export function createQuizDraft(
         sourceChunkIds: [],
       },
     ],
+  }
+
+  if (!category)
+    return draft
+
+  return {
+    questions: draft.questions.map((question, index) => ({
+      ...question,
+      topic: category.name,
+      knowledgePoint: category.knowledgePoints[
+        index % category.knowledgePoints.length
+      ]!,
+    })),
   }
 }
 
@@ -240,7 +260,10 @@ export class FakeQuizPlanner extends QuizPlanner {
       }
     }
 
-    const draft = createQuizDraft(plannerInput.round)
+    const draft = createQuizDraft(
+      plannerInput.round,
+      plannerInput.category,
+    )
     const evidenceChunkId = 'fake:answer_evidence'
     const draftWithEvidence = {
       ...draft,
@@ -357,7 +380,7 @@ export function createQuizPlanningSubgraph(
   | 'runModel'
   | 'getRequiredSkillNames'
   | 'validateDraft'
-  | 'materializeRoundPlan'>,
+  | 'materializeSectionPlan'>,
   questionBank: Pick<QuestionBank, 'findRecentStems'>,
   questionSignalRetriever: Pick<KnowledgeRetriever, 'search'>,
 ) {
@@ -400,7 +423,7 @@ export function createQuizGraphFixture(options: {
 export function correctSubmission(request: QuizRoundRequest) {
   return {
     reviewId: request.reviewId,
-    answers: request.questions.map(question => ({
+    answers: request.sections.flatMap(section => section.questions).map(question => ({
       questionId: question.questionId,
       selectedOptionIds: question.type === QuestionType.Multiple
         ? ['B', 'A']
@@ -412,7 +435,7 @@ export function correctSubmission(request: QuizRoundRequest) {
 export function wrongSubmission(request: QuizRoundRequest) {
   return {
     reviewId: request.reviewId,
-    answers: request.questions.map(question => ({
+    answers: request.sections.flatMap(section => section.questions).map(question => ({
       questionId: question.questionId,
       selectedOptionIds: question.type === QuestionType.Multiple
         ? ['C']
@@ -433,15 +456,23 @@ export function materializeTestPlan(input: {
     round,
     difficulty: input.difficulty ?? QuizDifficulty.Foundation,
     strategy: QuizStrategy.Initial,
+    category: TEST_QUIZ_CATEGORY,
     previousQuestionStems: [],
     retrievedChunks: [],
     memoryContext: { weakKnowledgePoints: [] },
     jdContext: null,
   }
 
-  return planner.materializeRoundPlan({
+  const section = planner.materializeSectionPlan({
     threadId: input.threadId ?? 'test-thread',
     plannerInput,
-    draft: createQuizDraft(round),
+    draft: createQuizDraft(round, TEST_QUIZ_CATEGORY),
   })
+  return {
+    reviewId: `${input.threadId ?? 'test-thread'}:round:${round}:review`,
+    round,
+    difficulty: plannerInput.difficulty,
+    strategy: plannerInput.strategy,
+    sections: [section],
+  }
 }

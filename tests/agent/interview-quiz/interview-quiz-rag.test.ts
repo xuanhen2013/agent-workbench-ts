@@ -83,8 +83,11 @@ describe('Interview Quiz Graph RAG', () => {
       title: 'Agent 前端工程师',
       focusKnowledgePoints: ['LangGraph', 'RAG', 'MCP'],
     })
-    expect(knowledgeRetriever.calls[0]?.query).toContain('LangGraph')
-    expect(knowledgeRetriever.calls[0]?.query).toContain('RAG')
+    const queries = knowledgeRetriever.calls.map(call => call.query).join('\n')
+    expect(knowledgeRetriever.calls).toHaveLength(3)
+    expect(queries).toContain('LangGraph')
+    expect(queries).toContain('RAG')
+    expect(queries).toContain('MCP')
   })
 
   test('选择市场 JD 时由 MarketJdCatalog 加载，而不是读取 learner 私有文档', async () => {
@@ -170,8 +173,11 @@ describe('Interview Quiz Graph RAG', () => {
     findRoundRequest(snapshot)
     expect(knowledgeRetriever.calls.map(call => call.role)).toEqual([
       'question_signal',
+      'question_signal',
+      'question_signal',
     ])
-    expect(planner.calls[0]?.retrievedChunks).toHaveLength(1)
+    expect(planner.calls.every(call => call.retrievedChunks.length === 1))
+      .toBe(true)
     expect(snapshot.values.retrievedChunks).toHaveLength(2)
   })
 
@@ -237,7 +243,7 @@ describe('Interview Quiz Graph RAG', () => {
     }, config(threadId))
 
     findRoundRequest(await graph.getState(config(threadId)))
-    expect(questionSignalRetriever.calls).toHaveLength(1)
+    expect(questionSignalRetriever.calls).toHaveLength(3)
     expect(questionSignalRetriever.calls[0]?.role).toBe('question_signal')
     expect(planner.calls[0]?.retrievedChunks).toHaveLength(1)
   })
@@ -269,9 +275,10 @@ describe('Interview Quiz Graph RAG', () => {
       resume: { reviewId: review.reviewId, action: 'next_round' },
     }), config(threadId))
 
-    expect(knowledgeRetriever.calls).toHaveLength(2)
-    expect(knowledgeRetriever.calls[1]?.query).toContain('StateGraph')
-    expect(planner.calls[1]?.retrievedChunks.map(chunk => chunk.evidenceRole))
+    expect(knowledgeRetriever.calls).toHaveLength(6)
+    expect(knowledgeRetriever.calls.slice(3).map(call => call.query).join('\n'))
+      .toContain('LangGraph')
+    expect(planner.calls[3]?.retrievedChunks.map(chunk => chunk.evidenceRole))
       .toEqual([KnowledgeEvidenceRole.QuestionSignal])
   })
 })

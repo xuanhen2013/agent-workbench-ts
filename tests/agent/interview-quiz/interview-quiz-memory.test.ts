@@ -172,9 +172,9 @@ describe('Interview Quiz Graph LearningMemory', () => {
       expect(second.planner.calls[0]?.memoryContext)
         .toEqual(persistedContext)
       expect(secondQuestionBank.inputs[0]?.knowledgePoints)
-        .toEqual(persistedContext.weakKnowledgePoints)
+        .toEqual(['LangGraph', 'Multi-Agent'])
       expect(second.questionSignalRetriever.calls[0]?.query)
-        .toContain(persistedContext.weakKnowledgePoints[0]!)
+        .toContain('LangGraph')
       expect((await second.graph.getState(graphConfig(secondThreadId))).values)
         .toMatchObject({ status: InterviewQuizStatus.WaitingForAnswers })
     }

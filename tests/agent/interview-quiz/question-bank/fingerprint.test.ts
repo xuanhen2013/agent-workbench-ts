@@ -9,7 +9,7 @@ import { materializeTestPlan } from '../../../helpers/quiz'
 
 describe('question fingerprint', () => {
   test('忽略展示 ID、大小写、空白、选项顺序和答案顺序', () => {
-    const original = materializeTestPlan().questions[2]!
+    const original = materializeTestPlan().sections[0]!.questions[2]!
     const equivalent = {
       ...structuredClone(original),
       questionId: 'another-round-question-id',
@@ -40,7 +40,7 @@ describe('question fingerprint', () => {
   })
 
   test('答案、选项文本或难度变化会产生不同身份', () => {
-    const question = materializeTestPlan().questions[0]!
+    const question = materializeTestPlan().sections[0]!.questions[0]!
     const fingerprint = createQuestionFingerprint({
       difficulty: QuizDifficulty.Foundation,
       question,

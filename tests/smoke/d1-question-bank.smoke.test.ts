@@ -34,12 +34,15 @@ test('真实 D1 重复保存同一 Plan 仍只有五个新 ID', async () => {
   const basePlan = materializeTestPlan({ threadId: `d1-smoke-${marker}` })
   const plan = {
     ...basePlan,
-    questions: basePlan.questions.map(question => ({
-      ...question,
-      // 唯一标记只放内部分类，不污染用户可见题干。
-      topic: `smoke:${marker}:${question.topic}`,
-      // Fake Fixture 的轮次前缀也不是正式题干的一部分。
-      stem: question.stem.replace(/^第 \d+ 轮：/, ''),
+    sections: basePlan.sections.map(section => ({
+      ...section,
+      questions: section.questions.map(question => ({
+        ...question,
+        // 唯一标记只放内部分类，不污染用户可见题干。
+        topic: `smoke:${marker}:${question.topic}`,
+        // Fake Fixture 的轮次前缀也不是正式题干的一部分。
+        stem: question.stem.replace(/^第 \d+ 轮(?:（[^）]+）)?：/, ''),
+      })),
     })),
   }
   const before = await questionBank.count({ signal })
@@ -50,14 +53,14 @@ test('真实 D1 重复保存同一 Plan 仍只有五个新 ID', async () => {
 
   expect(afterFirst).toBe(before + 5)
   expect(afterSecond).toBe(afterFirst)
-  expect(second.questions.map(question => question.bankQuestionId))
-    .toEqual(first.questions.map(question => question.bankQuestionId))
+  expect(second.sections[0]!.questions.map(question => question.bankQuestionId))
+    .toEqual(first.sections[0]!.questions.map(question => question.bankQuestionId))
 
   const stored = await questionBank.findById(
-    first.questions[0]!.bankQuestionId!,
+    first.sections[0]!.questions[0]!.bankQuestionId!,
     { signal },
   )
-  expect(stored?.stem).toBe(plan.questions[0]!.stem)
+  expect(stored?.stem).toBe(plan.sections[0]!.questions[0]!.stem)
   expect(stored?.stem).not.toContain('[smoke:')
-  expect(stored?.stem).not.toMatch(/^第 \d+ 轮：/)
+  expect(stored?.stem).not.toMatch(/^第 \d+ 轮(?:（[^）]+）)?：/)
 }, 60_000)

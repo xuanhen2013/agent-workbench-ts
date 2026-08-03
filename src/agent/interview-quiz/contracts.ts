@@ -31,6 +31,25 @@ export enum QuizCompletionReason {
   MaxRounds = 'max_rounds',
 }
 
+export enum QuizCategoryId {
+  Orchestration = 'orchestration',
+  Tooling = 'tooling',
+  Knowledge = 'knowledge',
+  Reliability = 'reliability',
+}
+
+export const QUESTIONS_PER_CATEGORY = 5
+export const MAX_QUIZ_CATEGORIES = 3
+export const MAX_QUESTIONS_PER_ROUND
+  = QUESTIONS_PER_CATEGORY * MAX_QUIZ_CATEGORIES
+
+/** JD 选出的稳定题目分类；ID 由服务端决定，模型不能生成。 */
+export interface QuizCategory {
+  categoryId: QuizCategoryId
+  name: string
+  knowledgePoints: string[]
+}
+
 /** 创建 Quiz Thread 时由 Web 提交，题目方向固定为 Agent 工程。 */
 export const QuizConfigSchema = z.object({
   initialDifficulty: z.enum(QuizDifficulty),
@@ -63,7 +82,7 @@ export const QuizQuestionDraftSchema = z.object({
 }).strict()
 
 export const QuizRoundDraftSchema = z.object({
-  questions: z.array(QuizQuestionDraftSchema).length(5),
+  questions: z.array(QuizQuestionDraftSchema).length(QUESTIONS_PER_CATEGORY),
 }).strict()
 
 export const QuizAnswerSchema = z.object({
@@ -73,7 +92,9 @@ export const QuizAnswerSchema = z.object({
 
 export const QuizRoundSubmissionSchema = z.object({
   reviewId: z.string().min(1),
-  answers: z.array(QuizAnswerSchema).length(5),
+  answers: z.array(QuizAnswerSchema)
+    .min(QUESTIONS_PER_CATEGORY)
+    .max(MAX_QUESTIONS_PER_ROUND),
 }).strict()
 
 export type QuizConfig = z.infer<typeof QuizConfigSchema>
@@ -90,13 +111,19 @@ export interface PlannedQuizQuestion extends QuizQuestionDraft {
   bankQuestionId?: string
 }
 
+/** Planner 每次只生成当前分类的五道题。 */
+export interface QuizSectionPlan {
+  category: QuizCategory
+  questions: PlannedQuizQuestion[]
+}
+
 export interface QuizRoundPlan {
   reviewId: string
   round: number
   difficulty: QuizDifficulty
   strategy: QuizStrategy
-  /** 服务端私有题目，仍然包含正确答案和解析。 */
-  questions: PlannedQuizQuestion[]
+  /** 服务端私有分类题卷，仍然包含正确答案和解析。 */
+  sections: QuizSectionPlan[]
 }
 
 export interface QuizQuestionResult {
@@ -105,10 +132,18 @@ export interface QuizQuestionResult {
   isCorrect: boolean
 }
 
-export interface QuizRoundResult {
+export interface QuizSectionResult {
+  categoryId: QuizCategoryId
   correctCount: number
   allCorrect: boolean
   questionResults: QuizQuestionResult[]
+  wrongKnowledgePoints: string[]
+}
+
+export interface QuizRoundResult {
+  correctCount: number
+  allCorrect: boolean
+  sectionResults: QuizSectionResult[]
   wrongKnowledgePoints: string[]
 }
 

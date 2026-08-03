@@ -64,22 +64,26 @@ describe('CloudflareD1QuestionBank', () => {
 
     const first = await bank.savePlan(plan, { signal: signal() })
     const second = await bank.savePlan(plan, { signal: signal() })
+    const firstQuestions = first.sections[0]!.questions
+    const secondQuestions = second.sections[0]!.questions
 
     expect(bodies).toHaveLength(2)
     expect(bodies[0]?.sql).toContain('INSERT OR IGNORE INTO question_bank')
     expect(bodies[0]?.sql.match(/\(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\)/g))
       .toHaveLength(5)
     expect(bodies[0]?.params).toHaveLength(60)
-    expect(second.questions.map(question => question.bankQuestionId))
-      .toEqual(first.questions.map(question => question.bankQuestionId))
-    expect(plan.questions.every(question => !question.bankQuestionId)).toBe(true)
+    expect(secondQuestions.map(question => question.bankQuestionId))
+      .toEqual(firstQuestions.map(question => question.bankQuestionId))
+    expect(plan.sections[0]!.questions.every(question => !question.bankQuestionId))
+      .toBe(true)
   })
 
   test('查询只在 Adapter 边界还原领域数据', async () => {
     const plan = materializeTestPlan()
+    const question = plan.sections[0]!.questions[0]!
     const stored = createStoredQuizQuestion({
       difficulty: plan.difficulty,
-      question: plan.questions[0]!,
+      question,
       createdAt: '2026-08-01T00:00:00.000Z',
     })
     const fetch: FetchLike = async (_input, init) => {

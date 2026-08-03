@@ -23,7 +23,8 @@ export class InMemoryQuestionBank implements QuestionBank {
     options: { signal: AbortSignal },
   ): Promise<QuizRoundPlan> {
     const createdAt = this.now()
-    const candidates = plan.questions.map((question) => {
+    const questions = plan.sections.flatMap(section => section.questions)
+    const candidates = questions.map((question) => {
       options.signal.throwIfAborted()
       return createStoredQuizQuestion({
         difficulty: plan.difficulty,
@@ -44,9 +45,20 @@ export class InMemoryQuestionBank implements QuestionBank {
 
     return {
       ...plan,
-      questions: plan.questions.map((question, index) => ({
-        ...question,
-        bankQuestionId: candidates[index]!.bankQuestionId,
+      sections: plan.sections.map(section => ({
+        ...section,
+        questions: section.questions.map((question) => {
+          const candidate = candidates.find(item => (
+            item.stem === question.stem
+            && item.knowledgePoint === question.knowledgePoint
+          ))
+          if (!candidate)
+            throw new Error('stored_question_candidate_missing')
+          return {
+            ...question,
+            bankQuestionId: candidate.bankQuestionId,
+          }
+        }),
       })),
     }
   }

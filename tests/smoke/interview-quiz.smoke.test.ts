@@ -81,7 +81,7 @@ test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async
   )
   const submission = {
     reviewId: firstQuestions.reviewId,
-    answers: firstQuestions.questions.map(question => ({
+    answers: firstQuestions.sections.flatMap(section => section.questions).map(question => ({
       questionId: question.questionId,
       selectedOptionIds: [question.options[0]!.optionId],
     })),
@@ -112,7 +112,11 @@ test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async
   } | null
 
   expect(secondQuestions.round).toBe(2)
-  expect(secondQuestions.questions).toHaveLength(5)
+  expect(secondQuestions.sections.length).toBeGreaterThanOrEqual(1)
+  expect(secondQuestions.sections.length).toBeLessThanOrEqual(3)
+  expect(secondQuestions.questionCount).toBe(
+    secondQuestions.sections.length * 5,
+  )
   if (usage) {
     expect(usage.inputTokens).toBeGreaterThan(0)
     expect(usage.cachedTokens).toBeGreaterThanOrEqual(0)

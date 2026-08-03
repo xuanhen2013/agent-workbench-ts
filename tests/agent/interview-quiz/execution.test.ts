@@ -18,7 +18,8 @@ describe('Interview Quiz execution', () => {
     const request = projectRoundRequest(materializeTestPlan())
     const serialized = JSON.stringify(request)
 
-    expect(request.questions).toHaveLength(5)
+    expect(request.sections).toHaveLength(1)
+    expect(request.sections[0]?.questions).toHaveLength(5)
     expect(serialized).not.toContain('correctOptionIds')
     expect(serialized).not.toContain('explanation')
     expect(serialized).not.toContain('sourceChunkIds')
@@ -48,6 +49,7 @@ describe('Interview Quiz execution', () => {
 
     expect(result.correctCount).toBe(5)
     expect(result.allCorrect).toBe(true)
+    expect(result.sectionResults[0]?.allCorrect).toBe(true)
   })
 
   test('错题生成去重薄弱点，公开结果仍不包含私有答案', () => {

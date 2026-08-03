@@ -17,12 +17,14 @@ describe('InMemoryQuestionBank', () => {
 
     const first = await bank.savePlan(plan, { signal: signal() })
     const second = await bank.savePlan(plan, { signal: signal() })
+    const firstQuestions = first.sections[0]!.questions
+    const secondQuestions = second.sections[0]!.questions
 
     expect(await bank.count({ signal: signal() })).toBe(5)
-    expect(second.questions.map(question => question.bankQuestionId))
-      .toEqual(first.questions.map(question => question.bankQuestionId))
+    expect(secondQuestions.map(question => question.bankQuestionId))
+      .toEqual(firstQuestions.map(question => question.bankQuestionId))
     expect(plan).toEqual(before)
-    expect(first.questions.every(question => question.bankQuestionId))
+    expect(firstQuestions.every(question => question.bankQuestionId))
       .toBe(true)
   })
 
@@ -30,28 +32,32 @@ describe('InMemoryQuestionBank', () => {
     const bank = new InMemoryQuestionBank()
     const firstPlan = materializeTestPlan()
     const first = await bank.savePlan(firstPlan, { signal: signal() })
+    const firstPlanQuestions = firstPlan.sections[0]!.questions
     const changedPrivateFields = {
       ...firstPlan,
-      questions: firstPlan.questions.map((question, index) => (
-        index === 0
-          ? {
-              ...question,
-              explanation: '不应覆盖首次保存的解释。',
-              sourceChunkIds: ['new-source'],
-            }
-          : question
-      )),
+      sections: firstPlan.sections.map(section => ({
+        ...section,
+        questions: section.questions.map((question, index) => (
+          index === 0
+            ? {
+                ...question,
+                explanation: '不应覆盖首次保存的解释。',
+                sourceChunkIds: ['new-source'],
+              }
+            : question
+        )),
+      })),
     }
 
     await bank.savePlan(changedPrivateFields, { signal: signal() })
     const stored = await bank.findById(
-      first.questions[0]!.bankQuestionId!,
+      first.sections[0]!.questions[0]!.bankQuestionId!,
       { signal: signal() },
     )
 
-    expect(stored?.explanation).toBe(firstPlan.questions[0]!.explanation)
+    expect(stored?.explanation).toBe(firstPlanQuestions[0]!.explanation)
     expect(stored?.sourceChunkIds).toEqual(
-      firstPlan.questions[0]!.sourceChunkIds,
+      firstPlanQuestions[0]!.sourceChunkIds,
     )
   })
 
@@ -62,7 +68,7 @@ describe('InMemoryQuestionBank', () => {
 
     const stems = await bank.findRecentStems({
       difficulty: QuizDifficulty.Foundation,
-      knowledgePoints: [' StateGraph '],
+      knowledgePoints: [' LangGraph '],
       limit: 1,
       signal: signal(),
     })
@@ -73,7 +79,7 @@ describe('InMemoryQuestionBank', () => {
       signal: signal(),
     })
 
-    expect(stems).toEqual([plan.questions[0]!.stem])
+    expect(stems).toEqual([plan.sections[0]!.questions[0]!.stem])
     expect(noAdvanced).toEqual([])
   })
 

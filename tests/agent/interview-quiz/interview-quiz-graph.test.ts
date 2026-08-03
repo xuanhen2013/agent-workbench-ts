@@ -59,8 +59,9 @@ describe('Interview Quiz Graph', () => {
       value => QuizRoundRequestSchema.safeParse(value),
     )
 
-    expect(firstQuestions.questions).toHaveLength(5)
-    expect(planner.calls).toHaveLength(1)
+    expect(firstQuestions.sections).toHaveLength(3)
+    expect(firstQuestions.questionCount).toBe(15)
+    expect(planner.calls).toHaveLength(3)
     expect(firstSnapshot.values.roundContext).toEqual({
       round: 1,
       difficulty: QuizDifficulty.Foundation,
@@ -94,10 +95,9 @@ describe('Interview Quiz Graph', () => {
       value => QuizRoundRequestSchema.safeParse(value),
     )
 
-    expect(planner.calls).toHaveLength(2)
-    expect(planner.calls[1]?.history).toHaveLength(3)
-    expect(JSON.stringify(planner.calls[1]?.history)).toContain('错误知识点')
-    expect(planner.calls[1]?.strategy).toBe(QuizStrategy.Remediate)
+    expect(planner.calls).toHaveLength(6)
+    expect(JSON.stringify(planner.calls[3]?.history)).toContain('错误知识点')
+    expect(planner.calls[3]?.strategy).toBe(QuizStrategy.Remediate)
     expect(secondSnapshot.values.roundContext).toEqual({
       round: 2,
       difficulty: QuizDifficulty.Foundation,
@@ -117,12 +117,12 @@ describe('Interview Quiz Graph', () => {
         {
           plan: { round: 2 },
           result: { allCorrect: true },
-          modelUsage: { cachedTokens: 800 },
+          modelUsage: { cachedTokens: 2400 },
         },
       ],
     })
     expect(completed.tasks.flatMap(task => task.interrupts)).toHaveLength(0)
-    expect(planner.calls).toHaveLength(2)
+    expect(planner.calls).toHaveLength(6)
   })
 
   test('全对后由 replan 提升难度并切换为 advance', async () => {
@@ -164,10 +164,63 @@ describe('Interview Quiz Graph', () => {
       difficulty: QuizDifficulty.Intermediate,
       strategy: QuizStrategy.Advance,
     })
-    expect(planner.calls[1]).toMatchObject({
+    expect(planner.calls[3]).toMatchObject({
       round: 2,
       difficulty: QuizDifficulty.Intermediate,
       strategy: QuizStrategy.Advance,
     })
+  })
+
+  test('RePlan 只重新生成上一轮答错的分类', async () => {
+    const { graph, planner } = createQuizGraphFixture()
+    const threadId = 'quiz-graph-category-remediate-thread'
+
+    await graph.invoke({
+      threadId,
+      learnerId: TEST_LEARNER_ID,
+      config: {
+        initialDifficulty: QuizDifficulty.Foundation,
+        maxRounds: 2,
+      },
+    }, config(threadId))
+
+    const firstQuestions = findInterrupt(
+      await graph.getState(config(threadId)),
+      value => QuizRoundRequestSchema.safeParse(value),
+    )
+    const submission = correctSubmission(firstQuestions)
+    const firstCategoryIds = new Set(
+      firstQuestions.sections[0]!.questions.map(question => question.questionId),
+    )
+    submission.answers = submission.answers.map(answer => (
+      firstCategoryIds.has(answer.questionId)
+        ? { ...answer, selectedOptionIds: ['C'] }
+        : answer
+    ))
+
+    await graph.invoke(
+      new Command({ resume: submission }),
+      config(threadId),
+    )
+    const firstResult = findInterrupt(
+      await graph.getState(config(threadId)),
+      value => QuizRoundResultRequestSchema.safeParse(value),
+    )
+    await graph.invoke(new Command({
+      resume: {
+        reviewId: firstResult.reviewId,
+        action: QuizNextRoundAction.NextRound,
+      },
+    }), config(threadId))
+
+    const secondQuestions = findInterrupt(
+      await graph.getState(config(threadId)),
+      value => QuizRoundRequestSchema.safeParse(value),
+    )
+    expect(secondQuestions.sections).toHaveLength(1)
+    expect(secondQuestions.questionCount).toBe(5)
+    expect(secondQuestions.sections[0]?.category.categoryId)
+      .toBe(firstQuestions.sections[0]?.category.categoryId)
+    expect(planner.calls).toHaveLength(4)
   })
 })

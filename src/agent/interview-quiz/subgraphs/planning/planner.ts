@@ -1,9 +1,10 @@
 import type { Result } from 'neverthrow'
 import type {
+  QuizCategory,
   QuizDifficulty,
   QuizModelUsage,
   QuizRoundDraft,
-  QuizRoundPlan,
+  QuizSectionPlan,
   QuizStrategy,
 } from '../../contracts'
 import type { InterviewQuizError } from '../../errors'
@@ -87,6 +88,8 @@ export interface QuizPlannerInput {
   round: number
   difficulty: QuizDifficulty
   strategy: QuizStrategy
+  /** 当前模型调用只负责这一类的五道题。 */
+  category: QuizCategory
   /** 作为模型排除列表，并由 TypeScript 再做确定性重复校验。 */
   previousQuestionStems: string[]
   /** 当前轮 Retriever 返回的资料快照。 */
@@ -247,6 +250,16 @@ export function renderJdContext(context: JdContext | null): string {
   ].join('\n')
 }
 
+/** 分类由服务端确定，模型只负责围绕它生成五道题。 */
+export function renderQuizCategory(category: QuizCategory): string {
+  return [
+    '<quiz_category>',
+    '只生成这个分类的五道题；categoryId 和分类范围由服务端确定，不得自行改写。',
+    JSON.stringify(category),
+    '</quiz_category>',
+  ].join('\n')
+}
+
 export function addUsage(
   current: QuizModelUsage | undefined,
   responseUsage: {
@@ -312,6 +325,7 @@ export class QuizPlanner {
           renderForbiddenQuestionStems(input.previousQuestionStems),
           renderLearningMemory(input.memoryContext),
           renderJdContext(input.jdContext),
+          renderQuizCategory(input.category),
         ].filter(Boolean).join('\n\n'),
       },
     ]
@@ -489,19 +503,22 @@ export class QuizPlanner {
     return this._validateQuizRoundDraft(draft, input)
   }
 
-  materializeRoundPlan(input: {
+  materializeSectionPlan(input: {
     threadId: string
     plannerInput: QuizPlannerInput
     draft: QuizRoundDraft
-  }): QuizRoundPlan {
+  }): QuizSectionPlan {
     const { threadId, plannerInput, draft } = input
-    const prefix = `${threadId}:round:${plannerInput.round}`
+    const prefix = [
+      threadId,
+      'round',
+      plannerInput.round,
+      'category',
+      plannerInput.category.categoryId,
+    ].join(':')
 
     return {
-      reviewId: `${prefix}:review`,
-      round: plannerInput.round,
-      difficulty: plannerInput.difficulty,
-      strategy: plannerInput.strategy,
+      category: structuredClone(plannerInput.category),
       questions: draft.questions.map((question, index) => ({
         ...question,
         questionId: `${prefix}:question:${index + 1}`,
@@ -529,9 +546,9 @@ export interface PlanningPlannerPort {
     draft: QuizRoundDraft,
     input: QuizPlannerInput,
   ) => Result<QuizRoundDraft, QuizPlanError>
-  materializeRoundPlan: (input: {
+  materializeSectionPlan: (input: {
     threadId: string
     plannerInput: QuizPlannerInput
     draft: QuizRoundDraft
-  }) => QuizRoundPlan
+  }) => QuizSectionPlan
 }
