@@ -28,6 +28,9 @@ import {
   InMemoryKnowledgeRetriever,
   InMemoryKnowledgeStore,
 } from '@/knowledge/in-memory-rag'
+import {
+  createCloudflareD1CheckpointSaverFromEnv,
+} from '@/runtime/checkpoint/cloudflare-d1-checkpoint-saver'
 import { loadSkillCatalog } from '@/skills/skill-loader'
 
 /** 正式进程只创建一次 Graph 和 MemorySaver，所有 Joke Route 共享同一状态仓库。 */
@@ -124,6 +127,10 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
       signal: new AbortController().signal,
     })
   }
+  const cloudflareCheckpointSaver
+    = createCloudflareD1CheckpointSaverFromEnv(process.env)
+  if (cloudflareCheckpointSaver)
+    await cloudflareCheckpointSaver.initialize()
   const learningMemoryDatabase = new Database(
     process.env.LEARNING_MEMORY_SQLITE_PATH?.trim()
     || 'agent-workbench.sqlite',
@@ -149,7 +156,7 @@ Checkpointer 按 thread 保存 Graph 的当前状态和暂停点，使 Interrupt
   })
 
   const interviewQuizGraph = createInterviewQuizGraph({
-    checkpointer: new MemorySaver(),
+    checkpointer: cloudflareCheckpointSaver ?? new MemorySaver(),
     planningSubgraph,
     jdRetriever: knowledgeRetriever,
     marketJdCatalog,
