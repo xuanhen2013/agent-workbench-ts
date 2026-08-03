@@ -5,9 +5,11 @@ import { createQuizGraphFixture, fakeImportJdDocument } from '../helpers/quiz'
 
 function testApp() {
   return createApp({
-    interviewQuizGraph: createQuizGraphFixture().graph,
+    interviewQuiz: {
+      graph: createQuizGraphFixture().graph,
+      importJdDocument: fakeImportJdDocument,
+    },
     jokeGraph: createJokeGraphFixture().graph,
-    importJdDocument: fakeImportJdDocument,
   })
 }
 

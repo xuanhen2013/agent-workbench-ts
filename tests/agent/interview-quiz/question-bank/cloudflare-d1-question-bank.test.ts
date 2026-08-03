@@ -144,6 +144,20 @@ describe('CloudflareD1QuestionBank', () => {
     })
   })
 
+  test('请求超时只暴露稳定错误', async () => {
+    const bank = new CloudflareD1QuestionBank({
+      queryUrl: 'https://api.example.test/d1/query',
+      apiToken: 'test-token',
+      fetch: async () => await new Promise<Response>(() => {}),
+      timeoutMs: 5,
+    })
+
+    await expect(bank.count({ signal: signal() })).rejects.toMatchObject({
+      code: CloudflareD1QuestionBankErrorCode.RequestTimeout,
+      message: 'Cloudflare D1 question bank request timed out.',
+    })
+  })
+
   test('工厂只有配置完整时才启用，并生成官方 Query URL', async () => {
     expect(createCloudflareD1QuestionBankFromEnv({})).toBeUndefined()
 

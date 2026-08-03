@@ -12,6 +12,7 @@ import {
   StateGraph,
 } from '@langchain/langgraph'
 import { z } from 'zod/v4'
+import { logger, toSafeErrorLog } from '@/logger'
 import { ToolLoopStateSchema } from './state'
 
 export interface CreateToolLoopGraphOptions<TDomainState, TFinal> {
@@ -39,6 +40,38 @@ function genericError(code: string, message: string): ToolLoopError {
   return { code, message }
 }
 
+const ToolLoopContextSchema = z.object({ runId: z.string().min(1) })
+
+type ToolLoopContext = z.infer<typeof ToolLoopContextSchema>
+
+function toolLoopLogContext(
+  state: ToolLoopState,
+  _context: ToolLoopContext | undefined,
+) {
+  const parts = state.runId.split(':')
+  const roundIndex = parts.indexOf('round')
+  const categoryIndex = parts.indexOf('category')
+  const round = Number(parts[roundIndex + 1])
+  const threadId = /^[\da-f-]{36}$/i.test(parts[0] ?? '')
+    ? parts[0]
+    : undefined
+  const categoryId = categoryIndex >= 0
+    ? parts[categoryIndex + 1]
+    : undefined
+
+  return {
+    component: 'tool_loop',
+    runId: state.runId,
+    ...(threadId ? { threadId } : {}),
+    ...(roundIndex >= 0 && Number.isInteger(round) && round > 0
+      ? { round }
+      : {}),
+    ...(categoryId ? { categoryId } : {}),
+    toolRound: state.toolRound,
+    failureCount: state.failureCount,
+  }
+}
+
 export function asToolLoopOutput<TDomainState, TFinal>(
   state: ToolLoopState,
 ): ToolLoopOutput<TDomainState, TFinal> {
@@ -57,7 +90,7 @@ export function createToolLoopGraph<TDomainState, TFinal>(
   options: CreateToolLoopGraphOptions<TDomainState, TFinal>,
 ) {
   const graph = new StateGraph(ToolLoopStateSchema, {
-    context: z.object({ runId: z.string().min(1) }),
+    context: ToolLoopContextSchema,
   })
     .addNode('initialize', (state, { context }) => {
       const domainState = state.domainState as TDomainState
@@ -78,7 +111,8 @@ export function createToolLoopGraph<TDomainState, TFinal>(
         error: null,
       }
     })
-    .addNode('call_model', async (state, { signal }) => {
+    .addNode('call_model', async (state, { signal, context }) => {
+      const startedAt = performance.now()
       try {
         const domainState = state.domainState as TDomainState
         const toolSet = options.policy.createToolSet({ domainState })
@@ -99,7 +133,14 @@ export function createToolLoopGraph<TDomainState, TFinal>(
           usage: mergeUsage(state.usage, turn.usage),
         }
       }
-      catch {
+      catch (error) {
+        logger.warn({
+          ...toolLoopLogContext(state, context),
+          event: 'model_call_failed',
+          modelTurn: state.toolRound + 1,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          ...toSafeErrorLog(error),
+        }, 'Tool Loop model call failed')
         return {
           error: genericError('model_call_failed', 'Model call failed.'),
         }
@@ -134,7 +175,8 @@ export function createToolLoopGraph<TDomainState, TFinal>(
         ? { domainState: result.value.domainState }
         : { error: result.error }
     })
-    .addNode('execute_tools', async (state, { signal }) => {
+    .addNode('execute_tools', async (state, { signal, context }) => {
+      const startedAt = performance.now()
       try {
         const toolSet = options.policy.createToolSet({
           domainState: state.domainState as TDomainState,
@@ -153,7 +195,15 @@ export function createToolLoopGraph<TDomainState, TFinal>(
             + results.filter(result => !result.ok).length,
         }
       }
-      catch {
+      catch (error) {
+        logger.warn({
+          ...toolLoopLogContext(state, context),
+          event: 'tool_execution_failed',
+          toolNames: state.pendingToolCalls.map(call => call.name),
+          toolCallCount: state.pendingToolCalls.length,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          ...toSafeErrorLog(error),
+        }, 'Tool Loop execution failed')
         return {
           error: genericError(
             'tool_execution_failed',
@@ -207,12 +257,18 @@ export function createToolLoopGraph<TDomainState, TFinal>(
         output: result.value.value,
       }
     })
-    .addNode('failed', state => ({
-      error: state.error ?? genericError(
+    .addNode('failed', (state, { context }) => {
+      const error = state.error ?? genericError(
         'tool_loop_failed',
         'Tool Loop failed.',
-      ),
-    }))
+      )
+      logger.warn({
+        ...toolLoopLogContext(state, context),
+        event: 'tool_loop_failed',
+        toolLoopErrorCode: error.code,
+      }, 'Tool Loop failed')
+      return { error }
+    })
     .addEdge(START, 'initialize')
     .addEdge('initialize', 'call_model')
     .addConditionalEdges('call_model', (state) => {

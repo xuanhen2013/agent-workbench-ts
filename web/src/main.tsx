@@ -2,6 +2,7 @@ import { RouterProvider } from '@tanstack/react-router'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { router } from './router'
+import '@xyflow/react/dist/style.css'
 import './style.css'
 
 createRoot(document.getElementById('root')!).render(

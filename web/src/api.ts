@@ -182,16 +182,36 @@ export interface QuizProgressEvent {
   label: string
   categoryIndex?: number
   categoryCount?: number
+  round?: number
+  toolRound?: number
+  toolCallCount?: number
+  elapsedSeconds?: number
+}
+
+export interface QuizActivityEvent {
+  id: string
+  timestamp: string
+  level: 'info' | 'warn' | 'error'
+  scope: 'parent' | 'planning' | 'tool_loop' | 'tool'
+  event: 'node_started' | 'node_finished' | 'tool_started' | 'tool_finished' | 'stream_failed' | 'stream_completed'
+  label: string
+  node?: string
+  toolName?: string
+  round?: number
+  toolRound?: number
+  durationMs?: number
+  errorCode?: string
 }
 
 /**
- * 浏览器只解析三种服务端事件：进度、最终安全视图和稳定错误。
+ * 浏览器只解析安全活动、进度、最终安全视图和稳定错误。
  * 原始 Graph State 永远不进入这个 DTO。
  */
 async function streamRequest(
   url: string,
   init: RequestInit,
   onProgress: (event: QuizProgressEvent) => void,
+  onActivity?: (event: QuizActivityEvent) => void,
 ): Promise<InterviewQuizView> {
   const response = await fetch(url, init)
   if (!response.ok) {
@@ -221,8 +241,11 @@ async function streamRequest(
       return
 
     const payload = JSON.parse(data.join('\n')) as unknown
-    if (event === 'progress') {
+    if (event === 'progress' || event === 'heartbeat') {
       onProgress(payload as QuizProgressEvent)
+    }
+    else if (event === 'activity') {
+      onActivity?.(payload as QuizActivityEvent)
     }
     else if (event === 'done') {
       result = payload as InterviewQuizView
@@ -287,12 +310,13 @@ export function createInterviewQuiz(
 export function createInterviewQuizStream(
   input: QuizConfig & { learnerId: string },
   onProgress: (event: QuizProgressEvent) => void,
+  onActivity?: (event: QuizActivityEvent) => void,
 ) {
   return streamRequest('/api/interview-quiz/stream', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(input),
-  }, onProgress)
+  }, onProgress, onActivity)
 }
 
 export function getInterviewQuiz(threadId: string) {
@@ -316,6 +340,25 @@ export function submitInterviewQuizAnswers(
   )
 }
 
+export function submitInterviewQuizAnswersStream(
+  threadId: string,
+  reviewId: string,
+  answers: Array<{ questionId: string, selectedOptionIds: string[] }>,
+  onProgress: (event: QuizProgressEvent) => void,
+  onActivity?: (event: QuizActivityEvent) => void,
+) {
+  return streamRequest(
+    `/api/interview-quiz/${encodeURIComponent(threadId)}/answers/stream`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reviewId, answers }),
+    },
+    onProgress,
+    onActivity,
+  )
+}
+
 export function continueInterviewQuiz(
   threadId: string,
   reviewId: string,
@@ -334,6 +377,7 @@ export function continueInterviewQuizStream(
   threadId: string,
   reviewId: string,
   onProgress: (event: QuizProgressEvent) => void,
+  onActivity?: (event: QuizActivityEvent) => void,
 ) {
   return streamRequest(
     `/api/interview-quiz/${encodeURIComponent(threadId)}/next/stream`,
@@ -343,5 +387,6 @@ export function continueInterviewQuizStream(
       body: JSON.stringify({ reviewId, action: 'next_round' }),
     },
     onProgress,
+    onActivity,
   )
 }

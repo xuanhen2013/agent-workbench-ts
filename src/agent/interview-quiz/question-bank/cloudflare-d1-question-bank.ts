@@ -13,12 +13,18 @@ import {
   QuizOptionSchema,
 } from '@/agent/interview-quiz/contracts'
 import {
+  createTimeoutSignal,
+  DEFAULT_CLOUDFLARE_REQUEST_TIMEOUT_MS,
+  waitForSignal,
+} from '@/runtime/reliability/request-timeout'
+import {
   createStoredQuizQuestion,
   normalizeQuestionIdentityText,
 } from './fingerprint'
 
 export enum CloudflareD1QuestionBankErrorCode {
   RequestFailed = 'cloudflare_d1_question_bank_request_failed',
+  RequestTimeout = 'cloudflare_d1_question_bank_request_timeout',
   InvalidResponse = 'cloudflare_d1_question_bank_invalid_response',
 }
 
@@ -28,9 +34,11 @@ export class CloudflareD1QuestionBankError extends Error {
     readonly code: CloudflareD1QuestionBankErrorCode,
     readonly status?: number,
   ) {
-    super(code === CloudflareD1QuestionBankErrorCode.RequestFailed
-      ? 'Cloudflare D1 question bank request failed.'
-      : 'Cloudflare D1 question bank returned an invalid response.')
+    super(code === CloudflareD1QuestionBankErrorCode.RequestTimeout
+      ? 'Cloudflare D1 question bank request timed out.'
+      : code === CloudflareD1QuestionBankErrorCode.RequestFailed
+        ? 'Cloudflare D1 question bank request failed.'
+        : 'Cloudflare D1 question bank returned an invalid response.')
     this.name = 'CloudflareD1QuestionBankError'
   }
 }
@@ -40,6 +48,7 @@ export interface CloudflareD1QuestionBankOptions {
   apiToken: string
   fetch?: FetchLike
   now?: () => string
+  timeoutMs?: number
 }
 
 const D1StatementResultSchema = z.object({
@@ -167,64 +176,85 @@ export class CloudflareD1QuestionBank implements QuestionBank {
   ): Promise<Array<Record<string, unknown>>> {
     options.signal.throwIfAborted()
 
-    let response: Response
+    const timeout = createTimeoutSignal(
+      options.signal,
+      this.options.timeoutMs ?? DEFAULT_CLOUDFLARE_REQUEST_TIMEOUT_MS,
+    )
+
     try {
-      response = await this.request(this.options.queryUrl, {
+      const response = await waitForSignal(this.request(this.options.queryUrl, {
         method: 'POST',
         headers: {
           'authorization': `Bearer ${this.options.apiToken}`,
           'content-type': 'application/json',
         },
         body: JSON.stringify({ sql, params }),
-        signal: options.signal,
-      })
+        signal: timeout.signal,
+      }), timeout.signal)
+
+      if (!response.ok) {
+        throw new CloudflareD1QuestionBankError(
+          CloudflareD1QuestionBankErrorCode.RequestFailed,
+          response.status,
+        )
+      }
+
+      let body: unknown
+      try {
+        body = await waitForSignal(response.json(), timeout.signal)
+      }
+      catch {
+        if (timeout.timedOut()) {
+          throw new CloudflareD1QuestionBankError(
+            CloudflareD1QuestionBankErrorCode.RequestTimeout,
+          )
+        }
+        if (options.signal.aborted)
+          options.signal.throwIfAborted()
+        throw new CloudflareD1QuestionBankError(
+          CloudflareD1QuestionBankErrorCode.InvalidResponse,
+          response.status,
+        )
+      }
+
+      const parsed = D1ResponseSchema.safeParse(body)
+      if (!parsed.success || !parsed.data.success || !parsed.data.result?.length) {
+        throw new CloudflareD1QuestionBankError(
+          CloudflareD1QuestionBankErrorCode.InvalidResponse,
+          response.status,
+        )
+      }
+
+      const rows: Array<Record<string, unknown>> = []
+      for (const rawResult of parsed.data.result) {
+        const result = D1StatementResultSchema.safeParse(rawResult)
+        if (!result.success || !result.data.success) {
+          throw new CloudflareD1QuestionBankError(
+            CloudflareD1QuestionBankErrorCode.InvalidResponse,
+            response.status,
+          )
+        }
+        rows.push(...(result.data.results ?? []))
+      }
+      return rows
     }
-    catch {
+    catch (error) {
+      if (error instanceof CloudflareD1QuestionBankError)
+        throw error
+      if (timeout.timedOut()) {
+        throw new CloudflareD1QuestionBankError(
+          CloudflareD1QuestionBankErrorCode.RequestTimeout,
+        )
+      }
       if (options.signal.aborted)
         options.signal.throwIfAborted()
       throw new CloudflareD1QuestionBankError(
         CloudflareD1QuestionBankErrorCode.RequestFailed,
       )
     }
-
-    if (!response.ok) {
-      throw new CloudflareD1QuestionBankError(
-        CloudflareD1QuestionBankErrorCode.RequestFailed,
-        response.status,
-      )
+    finally {
+      timeout.dispose()
     }
-
-    let body: unknown
-    try {
-      body = await response.json()
-    }
-    catch {
-      throw new CloudflareD1QuestionBankError(
-        CloudflareD1QuestionBankErrorCode.InvalidResponse,
-        response.status,
-      )
-    }
-
-    const parsed = D1ResponseSchema.safeParse(body)
-    if (!parsed.success || !parsed.data.success || !parsed.data.result?.length) {
-      throw new CloudflareD1QuestionBankError(
-        CloudflareD1QuestionBankErrorCode.InvalidResponse,
-        response.status,
-      )
-    }
-
-    const rows: Array<Record<string, unknown>> = []
-    for (const rawResult of parsed.data.result) {
-      const result = D1StatementResultSchema.safeParse(rawResult)
-      if (!result.success || !result.data.success) {
-        throw new CloudflareD1QuestionBankError(
-          CloudflareD1QuestionBankErrorCode.InvalidResponse,
-          response.status,
-        )
-      }
-      rows.push(...(result.data.results ?? []))
-    }
-    return rows
   }
 
   async initialize(options: { signal: AbortSignal }): Promise<void> {

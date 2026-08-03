@@ -7,9 +7,11 @@ import { createQuizGraphFixture, fakeImportJdDocument } from '../helpers/quiz'
 
 function createFixture() {
   const app = createApp({
-    interviewQuizGraph: createQuizGraphFixture().graph,
+    interviewQuiz: {
+      graph: createQuizGraphFixture().graph,
+      importJdDocument: fakeImportJdDocument,
+    },
     jokeGraph: createJokeGraphFixture().graph,
-    importJdDocument: fakeImportJdDocument,
   })
   return { app }
 }

@@ -1,4 +1,7 @@
-import type { InterviewQuizView } from '@/routes/interview-quiz'
+import type {
+  InterviewQuizStreamOptions,
+  InterviewQuizView,
+} from '@/routes/interview-quiz'
 import { describe, expect, test } from 'bun:test'
 import { createApp } from '@/app'
 import { createJokeGraphFixture } from '../helpers/joke'
@@ -10,13 +13,16 @@ import {
   wrongSubmission,
 } from '../helpers/quiz'
 
-function createFixture() {
+function createFixture(streamOptions?: InterviewQuizStreamOptions) {
   const quiz = createQuizGraphFixture()
   return {
     app: createApp({
-      interviewQuizGraph: quiz.graph,
+      interviewQuiz: {
+        graph: quiz.graph,
+        importJdDocument: fakeImportJdDocument,
+        streamOptions,
+      },
       jokeGraph: createJokeGraphFixture().graph,
-      importJdDocument: fakeImportJdDocument,
     }),
     planner: quiz.planner,
   }
@@ -54,14 +60,121 @@ describe('Interview Quiz API', () => {
     const progress = events
       .filter(event => event.event === 'progress')
       .map(event => event.data as { phase: string, label: string })
+    const activities = events
+      .filter(event => event.event === 'activity')
+      .map(event => event.data as {
+        event: string
+        label: string
+        node?: string
+        toolName?: string
+        toolRound?: number
+      })
 
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toContain('text/event-stream')
     expect(progress.some(event => event.phase === 'generating_category')).toBe(true)
+    expect(progress.some(event => event.phase === 'retrieving_question_signals')).toBe(true)
+    expect(progress.some(event => event.phase === 'calling_model')).toBe(true)
+    expect(progress.some(event => event.phase === 'executing_tools')).toBe(true)
     expect(progress.some(event => event.phase === 'waiting_for_answers')).toBe(true)
+    expect(activities.some(event => (
+      event.event === 'node_started' && event.node === 'call_model'
+    ))).toBe(true)
+    expect(activities.some(event => (
+      event.event === 'tool_started' && typeof event.toolName === 'string'
+    ))).toBe(true)
+    expect(activities.some(event => (
+      event.event === 'tool_finished' && typeof event.toolName === 'string'
+    ))).toBe(true)
+    const executeStarted = activities.find(event => (
+      event.event === 'node_started' && event.node === 'execute_tools'
+    ))
+    const executeFinished = activities.find(event => (
+      event.event === 'node_finished' && event.node === 'execute_tools'
+    ))
+    expect(executeStarted?.toolRound).toBeGreaterThanOrEqual(1)
+    expect(executeFinished?.toolRound).toBe(executeStarted?.toolRound)
+    expect(executeFinished?.label).not.toContain('0 个 Tool')
+
+    const appendStarted = activities.find(event => (
+      event.event === 'node_started' && event.node === 'append_tool_outputs'
+    ))
+    const appendFinished = activities.find(event => (
+      event.event === 'node_finished' && event.node === 'append_tool_outputs'
+    ))
+    expect(appendFinished?.toolRound).toBe(appendStarted?.toolRound)
+    expect(appendFinished?.label).not.toContain('第 0 轮')
+    expect(activities.some(event => event.event === 'stream_completed')).toBe(true)
     expect(done?.data).toMatchObject({ status: 'needs_answers' })
     expect(JSON.stringify(events)).not.toContain('correctOptionIds')
     expect(JSON.stringify(events)).not.toContain('explanation')
+    expect(JSON.stringify(events)).not.toContain('Fake answer_evidence for tests')
+  })
+
+  test('SSE 长任务发送 heartbeat，并只展示最近阶段和等待时间', async () => {
+    const { app, planner } = createFixture({
+      heartbeatMs: 5,
+      generationTimeoutMs: 1_000,
+    })
+    const runModel = planner.runModel.bind(planner)
+    planner.runModel = async (input) => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      return runModel(input)
+    }
+
+    const response = await app.request('/api/interview-quiz/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        learnerId: TEST_LEARNER_ID,
+        initialDifficulty: 'foundation',
+        maxRounds: 1,
+      }),
+    })
+    const events = parseSse(await response.text())
+    const heartbeat = events.find(event => event.event === 'heartbeat')?.data as {
+      phase?: string
+      label?: string
+      elapsedSeconds?: number
+    } | undefined
+
+    expect(heartbeat?.phase).toBeString()
+    expect(heartbeat?.label).toContain('已等待')
+    expect(heartbeat?.elapsedSeconds).toBeGreaterThanOrEqual(1)
+    expect(events.some(event => event.event === 'done')).toBe(true)
+  })
+
+  test('整次生成超时后通过 SSE 返回稳定错误', async () => {
+    const { app, planner } = createFixture({
+      heartbeatMs: 50,
+      generationTimeoutMs: 5,
+    })
+    planner.runModel = async ({ signal }) => {
+      return await new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        })
+      })
+    }
+
+    const response = await app.request('/api/interview-quiz/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        learnerId: TEST_LEARNER_ID,
+        initialDifficulty: 'foundation',
+        maxRounds: 1,
+      }),
+    })
+    const events = parseSse(await response.text())
+    const error = events.find(event => event.event === 'error')?.data
+
+    expect(error).toEqual({
+      code: 'interview_quiz_generation_timeout',
+      message: 'The interview quiz generation timed out. Please try again.',
+    })
+    expect(events.some(event => event.event === 'done')).toBe(false)
+    expect(JSON.stringify(events)).not.toContain('TimeoutError')
   })
 
   test('SSE 下一轮复用同一 thread，并返回新的分类进度', async () => {
@@ -108,6 +221,44 @@ describe('Interview Quiz API', () => {
     expect(nextResponse.status).toBe(200)
     expect(nextProgress.some(event => event.phase === 'replanning')).toBe(true)
     expect((nextDone?.data as InterviewQuizView).status).toBe('needs_answers')
+  })
+
+  test('SSE 提交答案展示判分、长期记忆和下一轮 Interrupt', async () => {
+    const { app } = createFixture()
+    const created = parseSse(await (await app.request('/api/interview-quiz/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        learnerId: TEST_LEARNER_ID,
+        initialDifficulty: 'foundation',
+        maxRounds: 2,
+      }),
+    })).text()).find(event => event.event === 'done')?.data as InterviewQuizView
+    const questions = created.waitingQuestions
+    if (!questions)
+      throw new Error('Expected SSE round questions.')
+
+    const response = await app.request(
+      `/api/interview-quiz/${created.threadId}/answers/stream`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(wrongSubmission(questions)),
+      },
+    )
+    const events = parseSse(await response.text())
+    const phases = events
+      .filter(event => event.event === 'progress')
+      .map(event => (event.data as { phase: string }).phase)
+    const done = events.find(event => event.event === 'done')
+
+    expect(response.status).toBe(200)
+    expect(phases).toContain('grading')
+    expect(phases).toContain('saving_memory')
+    expect(phases).toContain('waiting_for_next_round')
+    expect((done?.data as InterviewQuizView).status).toBe('round_result')
+    expect(JSON.stringify(events)).not.toContain('correctOptionIds')
+    expect(JSON.stringify(events)).not.toContain('explanation')
   })
 
   test('创建、答题、查看结果、下一轮和最终完成形成完整闭环', async () => {

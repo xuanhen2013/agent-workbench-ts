@@ -13,10 +13,16 @@ import {
   copyCheckpoint,
 } from '@langchain/langgraph'
 import { z } from 'zod'
+import {
+  createTimeoutSignal,
+  DEFAULT_CLOUDFLARE_REQUEST_TIMEOUT_MS,
+  waitForSignal,
+} from '@/runtime/reliability/request-timeout'
 
 /** D1 Checkpointer 只暴露稳定错误，不把 SQL、响应正文或 Token 带给上层。 */
 export enum CloudflareD1CheckpointErrorCode {
   RequestFailed = 'cloudflare_d1_checkpoint_request_failed',
+  RequestTimeout = 'cloudflare_d1_checkpoint_request_timeout',
   InvalidResponse = 'cloudflare_d1_checkpoint_invalid_response',
   MissingThreadId = 'cloudflare_d1_checkpoint_missing_thread_id',
   InvalidConfig = 'cloudflare_d1_checkpoint_invalid_config',
@@ -27,13 +33,15 @@ export class CloudflareD1CheckpointError extends Error {
     readonly code: CloudflareD1CheckpointErrorCode,
     readonly status?: number,
   ) {
-    super(code === CloudflareD1CheckpointErrorCode.RequestFailed
-      ? 'Cloudflare D1 checkpoint request failed.'
-      : code === CloudflareD1CheckpointErrorCode.MissingThreadId
-        ? 'Cloudflare D1 checkpoint requires a thread id.'
-        : code === CloudflareD1CheckpointErrorCode.InvalidConfig
-          ? 'Cloudflare D1 checkpoint configuration is invalid.'
-          : 'Cloudflare D1 checkpoint returned an invalid response.')
+    super(code === CloudflareD1CheckpointErrorCode.RequestTimeout
+      ? 'Cloudflare D1 checkpoint request timed out.'
+      : code === CloudflareD1CheckpointErrorCode.RequestFailed
+        ? 'Cloudflare D1 checkpoint request failed.'
+        : code === CloudflareD1CheckpointErrorCode.MissingThreadId
+          ? 'Cloudflare D1 checkpoint requires a thread id.'
+          : code === CloudflareD1CheckpointErrorCode.InvalidConfig
+            ? 'Cloudflare D1 checkpoint configuration is invalid.'
+            : 'Cloudflare D1 checkpoint returned an invalid response.')
     this.name = 'CloudflareD1CheckpointError'
   }
 }
@@ -42,6 +50,7 @@ export interface CloudflareD1CheckpointSaverOptions {
   queryUrl: string
   apiToken: string
   fetch?: FetchLike
+  timeoutMs?: number
 }
 
 const D1StatementResultSchema = z.object({
@@ -197,62 +206,87 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
   private async query(
     sql: string,
     params: unknown[],
+    parentSignal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
-    let response: Response
+    const timeout = createTimeoutSignal(
+      parentSignal,
+      this.options.timeoutMs ?? DEFAULT_CLOUDFLARE_REQUEST_TIMEOUT_MS,
+    )
+
     try {
-      response = await this.request(this.options.queryUrl, {
+      const response = await waitForSignal(this.request(this.options.queryUrl, {
         method: 'POST',
         headers: {
           'authorization': `Bearer ${this.options.apiToken}`,
           'content-type': 'application/json',
         },
         body: JSON.stringify({ sql, params }),
-      })
-    }
-    catch {
-      throw new CloudflareD1CheckpointError(
-        CloudflareD1CheckpointErrorCode.RequestFailed,
-      )
-    }
+        signal: timeout.signal,
+      }), timeout.signal)
 
-    if (!response.ok) {
-      throw new CloudflareD1CheckpointError(
-        CloudflareD1CheckpointErrorCode.RequestFailed,
-        response.status,
-      )
-    }
+      if (!response.ok) {
+        throw new CloudflareD1CheckpointError(
+          CloudflareD1CheckpointErrorCode.RequestFailed,
+          response.status,
+        )
+      }
 
-    let body: unknown
-    try {
-      body = await response.json()
-    }
-    catch {
-      throw new CloudflareD1CheckpointError(
-        CloudflareD1CheckpointErrorCode.InvalidResponse,
-        response.status,
-      )
-    }
-
-    const parsed = D1ResponseSchema.safeParse(body)
-    if (!parsed.success || !parsed.data.success || !parsed.data.result) {
-      throw new CloudflareD1CheckpointError(
-        CloudflareD1CheckpointErrorCode.InvalidResponse,
-        response.status,
-      )
-    }
-
-    const rows: Array<Record<string, unknown>> = []
-    for (const rawResult of parsed.data.result) {
-      const result = D1StatementResultSchema.safeParse(rawResult)
-      if (!result.success || !result.data.success) {
+      let body: unknown
+      try {
+        body = await waitForSignal(response.json(), timeout.signal)
+      }
+      catch {
+        if (timeout.timedOut()) {
+          throw new CloudflareD1CheckpointError(
+            CloudflareD1CheckpointErrorCode.RequestTimeout,
+          )
+        }
+        if (parentSignal?.aborted)
+          parentSignal.throwIfAborted()
         throw new CloudflareD1CheckpointError(
           CloudflareD1CheckpointErrorCode.InvalidResponse,
           response.status,
         )
       }
-      rows.push(...(result.data.results ?? []))
+
+      const parsed = D1ResponseSchema.safeParse(body)
+      if (!parsed.success || !parsed.data.success || !parsed.data.result) {
+        throw new CloudflareD1CheckpointError(
+          CloudflareD1CheckpointErrorCode.InvalidResponse,
+          response.status,
+        )
+      }
+
+      const rows: Array<Record<string, unknown>> = []
+      for (const rawResult of parsed.data.result) {
+        const result = D1StatementResultSchema.safeParse(rawResult)
+        if (!result.success || !result.data.success) {
+          throw new CloudflareD1CheckpointError(
+            CloudflareD1CheckpointErrorCode.InvalidResponse,
+            response.status,
+          )
+        }
+        rows.push(...(result.data.results ?? []))
+      }
+      return rows
     }
-    return rows
+    catch (error) {
+      if (error instanceof CloudflareD1CheckpointError)
+        throw error
+      if (timeout.timedOut()) {
+        throw new CloudflareD1CheckpointError(
+          CloudflareD1CheckpointErrorCode.RequestTimeout,
+        )
+      }
+      if (parentSignal?.aborted)
+        parentSignal.throwIfAborted()
+      throw new CloudflareD1CheckpointError(
+        CloudflareD1CheckpointErrorCode.RequestFailed,
+      )
+    }
+    finally {
+      timeout.dispose()
+    }
   }
 
   async initialize(): Promise<void> {
@@ -265,6 +299,7 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
     threadId: string,
     checkpointNs: string,
     checkpointId: string,
+    signal?: AbortSignal,
   ): Promise<CheckpointTuple['pendingWrites']> {
     const rows = await this.query(
       `SELECT task_id, channel, value_type, value_blob
@@ -272,6 +307,7 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
        WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?
        ORDER BY task_id ASC, write_index ASC`,
       [threadId, checkpointNs, checkpointId],
+      signal,
     )
     const writes: NonNullable<CheckpointTuple['pendingWrites']> = []
     for (const value of rows) {
@@ -293,7 +329,10 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
     return writes
   }
 
-  private async toTuple(rowValue: unknown): Promise<CheckpointTuple> {
+  private async toTuple(
+    rowValue: unknown,
+    signal?: AbortSignal,
+  ): Promise<CheckpointTuple> {
     const row = CheckpointRowSchema.safeParse(rowValue)
     if (!row.success) {
       throw new CloudflareD1CheckpointError(
@@ -324,6 +363,7 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
         row.data.thread_id,
         row.data.checkpoint_ns,
         row.data.checkpoint_id,
+        signal,
       ),
     }
     if (row.data.parent_checkpoint_id) {
@@ -355,8 +395,9 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
       checkpointId
         ? [threadId, checkpointNs, checkpointId]
         : [threadId, checkpointNs],
+      config.signal,
     )
-    return rows[0] ? this.toTuple(rows[0]) : undefined
+    return rows[0] ? this.toTuple(rows[0], config.signal) : undefined
   }
 
   async* list(
@@ -392,10 +433,11 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
        ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY checkpoint_id DESC${options.limit !== undefined ? ' LIMIT ?' : ''}`,
       options.limit !== undefined ? [...params, Math.max(0, options.limit)] : params,
+      config.signal,
     )
     let yielded = 0
     for (const value of rows) {
-      const tuple = await this.toTuple(value)
+      const tuple = await this.toTuple(value, config.signal)
       if (options.filter && !Object.entries(options.filter).every(([key, expected]) => (
         (tuple.metadata as Record<string, unknown> | undefined)?.[key] === expected
       ))) {
@@ -440,6 +482,7 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
         metadataBlob.type,
         metadataBlob.data,
       ],
+      config.signal,
     )
     return {
       configurable: {
@@ -485,6 +528,7 @@ export class CloudflareD1CheckpointSaver extends BaseCheckpointSaver {
           serialized.type,
           serialized.data,
         ],
+        config.signal,
       )
     }
   }

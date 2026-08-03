@@ -109,9 +109,9 @@ describe('CloudflareAiSearchRetriever', () => {
     expect(called).toBe(false)
   })
 
-  test('HTTP 失败转换为安全的 CloudflareAiSearchError', async () => {
+  test('不可重试的 HTTP 失败转换为安全的 CloudflareAiSearchError', async () => {
     const fetch: FetchLike = async () => (
-      new Response('secret provider error', { status: 503 })
+      new Response('secret provider error', { status: 400 })
     )
     const retriever = new CloudflareAiSearchRetriever(config(fetch))
 
@@ -131,11 +131,98 @@ describe('CloudflareAiSearchRetriever', () => {
     catch (error) {
       expect(error).toMatchObject({
         code: CloudflareAiSearchErrorCode.RequestFailed,
-        status: 503,
+        status: 400,
         message: 'Cloudflare AI Search request failed.',
       })
       expect(String(error)).not.toContain('secret provider error')
     }
+  })
+
+  test('只读搜索遇到传输失败时最多重试两次', async () => {
+    let calls = 0
+    const fetch: FetchLike = async () => {
+      calls++
+      if (calls <= 2)
+        throw new TypeError('simulated connection reset')
+      return Response.json({ success: true, result: { chunks: [] } })
+    }
+
+    const retriever = new CloudflareAiSearchRetriever(config(fetch))
+    const result = await retriever.search({
+      query: 'StateGraph',
+      limit: 2,
+      signal: signal(),
+    })
+
+    expect(result).toEqual([])
+    expect(calls).toBe(3)
+  })
+
+  test('鉴权失败不重试', async () => {
+    let calls = 0
+    const fetch: FetchLike = async () => {
+      calls++
+      return new Response('unauthorized', { status: 401 })
+    }
+    const retriever = new CloudflareAiSearchRetriever(config(fetch))
+
+    await expect(retriever.search({
+      query: 'StateGraph',
+      limit: 2,
+      signal: signal(),
+    })).rejects.toMatchObject({
+      code: CloudflareAiSearchErrorCode.RequestFailed,
+      status: 401,
+    })
+    expect(calls).toBe(1)
+  })
+
+  test('响应解析失败不重试', async () => {
+    let calls = 0
+    // 无效 chunk 会被安全丢弃，整个响应仍是合法结构；用非法顶层响应
+    // 验证 InvalidResponse 不会进入重试分支。
+    const invalidResponse = new CloudflareAiSearchRetriever(config(async () => {
+      calls++
+      return Response.json({ success: true, result: {} })
+    }))
+
+    await expect(invalidResponse.search({
+      query: 'StateGraph',
+      limit: 2,
+      signal: signal(),
+    })).rejects.toMatchObject({
+      code: CloudflareAiSearchErrorCode.InvalidResponse,
+    })
+    expect(calls).toBe(1)
+  })
+
+  test('请求和响应正文超时都转换为稳定超时错误', async () => {
+    const pendingRequest = new CloudflareAiSearchRetriever({
+      ...config(async () => await new Promise<Response>(() => {})),
+      timeoutMs: 5,
+    })
+    await expect(pendingRequest.search({
+      query: 'StateGraph',
+      limit: 2,
+      signal: signal(),
+    })).rejects.toMatchObject({
+      code: CloudflareAiSearchErrorCode.RequestTimeout,
+      message: 'Cloudflare AI Search request timed out.',
+    })
+
+    const response = new Response(null, { status: 200 })
+    response.json = async () => await new Promise<never>(() => {})
+    const pendingBody = new CloudflareAiSearchRetriever({
+      ...config(async () => response),
+      timeoutMs: 5,
+    })
+    await expect(pendingBody.search({
+      query: 'StateGraph',
+      limit: 2,
+      signal: signal(),
+    })).rejects.toMatchObject({
+      code: CloudflareAiSearchErrorCode.RequestTimeout,
+    })
   })
 
   test('没有 Account/Instance 或覆盖 URL 时保持离线模式', () => {

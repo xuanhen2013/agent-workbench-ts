@@ -8,6 +8,8 @@ import { classifyOpenAIError } from './openai-errors'
 
 export type OpenAIReasoningEffort = Exclude<OpenAI.ReasoningEffort, null>
 
+export const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 180_000
+
 export type OpenAIResponseDefaults = Readonly<{
   /** Provider 默认模型；Workflow 无需逐层传递。 */
   model: string
@@ -54,6 +56,27 @@ export function parseOpenAIReasoningEffort(
   return parsed.data
 }
 
+/**
+ * SDK 和 executeWithPolicy 必须共享同一个单次请求预算。
+ * 如果两层各用不同值，较短的一层会提前取消请求，日志也会变得难以判断。
+ */
+export function parseOpenAIRequestTimeoutMs(
+  value: string | undefined,
+): number {
+  const candidate = value?.trim()
+  if (!candidate)
+    return DEFAULT_OPENAI_REQUEST_TIMEOUT_MS
+
+  const timeoutMs = Number(candidate)
+  if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(
+      'Invalid OPENAI_REQUEST_TIMEOUT_MS. Expected a positive integer in milliseconds.',
+    )
+  }
+
+  return timeoutMs
+}
+
 export type OpenAIResponseInputItem = OpenAI.Responses.ResponseInputItem
 
 export type OpenAIResponseFunctionTool = OpenAI.Responses.FunctionTool
@@ -86,11 +109,14 @@ export function createOpenAIResponsesExecutor(
   const reasoningEffort = parseOpenAIReasoningEffort(
     env.OPENAI_DEFAULT_REASONING_EFFORT,
   )
+  const requestTimeoutMs = parseOpenAIRequestTimeoutMs(
+    env.OPENAI_REQUEST_TIMEOUT_MS,
+  )
 
   const client = new OpenAI({
     baseURL,
     apiKey,
-    timeout: 60_000,
+    timeout: requestTimeoutMs,
   })
 
   return new OpenAIResponsesExecutor({
@@ -102,7 +128,19 @@ export function createOpenAIResponsesExecutor(
         ? { reasoning: { effort: reasoningEffort } }
         : {}),
     },
+    policy: createOpenAICallPolicy(requestTimeoutMs),
   })
+}
+
+function createOpenAICallPolicy(timeoutMs: number): CallPolicy {
+  return {
+    timeoutMs,
+    maxAttempts: 2,
+    initialDelayMs: 250,
+    maxDelayMs: 1_000,
+    // Timeout 不自动重试：上游可能已处理请求，重放会产生重复费用。
+    shouldRetry: failure => failure.kind === FailureKind.Transient,
+  }
 }
 
 // openai metadata
@@ -118,13 +156,9 @@ export function removeKnownGatewayMetadata(items: OpenAIResponseInputItem[]) {
 export class OpenAIResponsesExecutor {
   private readonly client: OpenAI
   private readonly defaults: OpenAIResponseDefaults
-  private readonly policy: CallPolicy = {
-    timeoutMs: 60_000,
-    maxAttempts: 2,
-    initialDelayMs: 250,
-    maxDelayMs: 1_000,
-    shouldRetry: failure => failure.kind === FailureKind.Transient,
-  }
+  private readonly policy: CallPolicy = createOpenAICallPolicy(
+    DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
+  )
 
   private sleep?: (ms: number, signal: AbortSignal) => Promise<void>
   private classify?: (error: unknown) => AgentFailure

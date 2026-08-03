@@ -1,6 +1,7 @@
-import type { ImportJdDocument, MarketJdCatalog } from '@/agent/interview-quiz/jd/contracts'
 import type { AppEnv } from '@/http'
-import type { InterviewQuizGraph } from '@/routes/interview-quiz'
+import type {
+  InterviewQuizRouteDeps,
+} from '@/routes/interview-quiz'
 import type { JokeGraph } from '@/routes/jokes'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
@@ -9,15 +10,13 @@ import {
   HttpErrorCode,
   HttpStatus,
 } from '@/http/errors'
-import { logger } from '@/logger'
+import { logger, toSafeErrorLog } from '@/logger'
 import { registerInterviewQuizRoutes } from '@/routes/interview-quiz'
 import { registerJokeRoutes } from '@/routes/jokes'
 
 export interface AppDeps {
-  interviewQuizGraph: InterviewQuizGraph
+  interviewQuiz: InterviewQuizRouteDeps
   jokeGraph: JokeGraph
-  importJdDocument: ImportJdDocument
-  marketJdCatalog?: MarketJdCatalog
 }
 
 export function createApp(deps: AppDeps) {
@@ -54,9 +53,7 @@ export function createApp(deps: AppDeps) {
   registerJokeRoutes(app, deps.jokeGraph)
   registerInterviewQuizRoutes(
     app,
-    deps.interviewQuizGraph,
-    deps.importJdDocument,
-    deps.marketJdCatalog,
+    deps.interviewQuiz,
   )
 
   app.notFound((c) => {
@@ -74,8 +71,7 @@ export function createApp(deps: AppDeps) {
       : 'The server could not process the request.'
 
     c.get('requestLogger').error({
-      errorName: error instanceof Error ? error.name : typeof error,
-      errorMessage: error instanceof Error ? error.message : String(error),
+      ...toSafeErrorLog(error),
       status,
     }, 'HTTP request failed')
 

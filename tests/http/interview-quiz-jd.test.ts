@@ -15,12 +15,14 @@ function createFixture() {
   return {
     quiz,
     app: createApp({
-      interviewQuizGraph: quiz.graph,
+      interviewQuiz: {
+        graph: quiz.graph,
+        importJdDocument: (input, options) => importJdDocument(input, {
+          embedder,
+          store,
+        }, options),
+      },
       jokeGraph: createJokeGraphFixture().graph,
-      importJdDocument: (input, options) => importJdDocument(input, {
-        embedder,
-        store,
-      }, options),
     }),
   }
 }

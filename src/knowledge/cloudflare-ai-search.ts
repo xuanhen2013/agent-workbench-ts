@@ -6,6 +6,11 @@ import type {
 import process from 'node:process'
 import { z } from 'zod'
 import {
+  createTimeoutSignal,
+  DEFAULT_CLOUDFLARE_REQUEST_TIMEOUT_MS,
+  waitForSignal,
+} from '@/runtime/reliability/request-timeout'
+import {
   KnowledgeEvidenceRole,
   KnowledgeSourceType,
 } from './contracts'
@@ -13,6 +18,7 @@ import {
 /** Cloudflare Adapter 自己的稳定错误码；不会把响应正文或 Token 写进错误。 */
 export enum CloudflareAiSearchErrorCode {
   RequestFailed = 'cloudflare_ai_search_request_failed',
+  RequestTimeout = 'cloudflare_ai_search_request_timeout',
   InvalidResponse = 'cloudflare_ai_search_invalid_response',
 }
 
@@ -21,9 +27,11 @@ export class CloudflareAiSearchError extends Error {
     readonly code: CloudflareAiSearchErrorCode,
     readonly status?: number,
   ) {
-    super(code === CloudflareAiSearchErrorCode.RequestFailed
-      ? 'Cloudflare AI Search request failed.'
-      : 'Cloudflare AI Search returned an invalid response.')
+    super(code === CloudflareAiSearchErrorCode.RequestTimeout
+      ? 'Cloudflare AI Search request timed out.'
+      : code === CloudflareAiSearchErrorCode.RequestFailed
+        ? 'Cloudflare AI Search request failed.'
+        : 'Cloudflare AI Search returned an invalid response.')
     this.name = 'CloudflareAiSearchError'
   }
 }
@@ -41,6 +49,7 @@ export interface CloudflareAiSearchRetrieverOptions {
   /** 当前 Retriever 允许读取的唯一证据角色。 */
   evidenceRole: KnowledgeEvidenceRole
   fetch?: FetchLike
+  timeoutMs?: number
 }
 
 export type FetchLike = (
@@ -147,6 +156,47 @@ function metadataString(
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
+// 首次请求之外最多重试两次，对应 250ms、1000ms 两段退避。
+const SEARCH_MAX_ATTEMPTS = 3
+const SEARCH_INITIAL_RETRY_DELAY_MS = 250
+const SEARCH_MAX_RETRY_DELAY_MS = 1_000
+
+/**
+ * Search 是只读操作，因此只重试“可能没有收到响应”的传输错误、408、429
+ * 和 5xx。鉴权、参数、解析错误不能靠重试解决。
+ */
+function isRetryableSearchError(error: CloudflareAiSearchError) {
+  // status 缺失只代表“没有收到 HTTP 响应”的 RequestFailed。
+  // InvalidResponse 同样没有 status，但响应已经到达，重试无法修复解析问题。
+  return error.code === CloudflareAiSearchErrorCode.RequestFailed
+    && (error.status === undefined
+      || error.status === 408
+      || error.status === 429
+      || error.status >= 500)
+}
+
+/** 可取消、会清理计时器的重试退避等待。 */
+function sleepWithSignal(delayMs: number, signal: AbortSignal) {
+  signal.throwIfAborted()
+
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const onAbort = () => {
+      if (timer)
+        clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(signal.reason)
+    }
+
+    timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 /**
  * 同一个 AI Search 实例可以保存多类资料，但每个 Retriever 仍然只负责
  * 一个证据角色，并在服务端固定提交 evidence_role + source_type Filter。
@@ -178,46 +228,106 @@ export class CloudflareAiSearchRetriever implements KnowledgeSearchRetriever {
     if (filenames?.length === 0)
       return []
 
+    // 一个总超时覆盖首次请求、两次重试和退避等待，避免“每次重试都重新获得 30 秒”。
+    const timeout = createTimeoutSignal(
+      input.signal,
+      this.options.timeoutMs ?? DEFAULT_CLOUDFLARE_REQUEST_TIMEOUT_MS,
+    )
+
+    try {
+      for (let attempt = 1; attempt <= SEARCH_MAX_ATTEMPTS; attempt++) {
+        try {
+          return await this.searchOnce(
+            input,
+            sourceTypes,
+            filenames,
+            timeout.signal,
+          )
+        }
+        catch (error) {
+          const classified = error instanceof CloudflareAiSearchError
+            ? error
+            : new CloudflareAiSearchError(
+                CloudflareAiSearchErrorCode.RequestFailed,
+              )
+
+          if (attempt >= SEARCH_MAX_ATTEMPTS || !isRetryableSearchError(classified))
+            throw classified
+
+          const delayMs = Math.min(
+            SEARCH_INITIAL_RETRY_DELAY_MS * 4 ** (attempt - 1),
+            SEARCH_MAX_RETRY_DELAY_MS,
+          )
+          await sleepWithSignal(delayMs, timeout.signal)
+        }
+      }
+
+      throw new CloudflareAiSearchError(
+        CloudflareAiSearchErrorCode.RequestFailed,
+      )
+    }
+    catch (error) {
+      if (timeout.timedOut()) {
+        throw new CloudflareAiSearchError(
+          CloudflareAiSearchErrorCode.RequestTimeout,
+        )
+      }
+      if (input.signal.aborted)
+        input.signal.throwIfAborted()
+      if (error instanceof CloudflareAiSearchError)
+        throw error
+      throw new CloudflareAiSearchError(
+        CloudflareAiSearchErrorCode.RequestFailed,
+      )
+    }
+    finally {
+      timeout.dispose()
+    }
+  }
+
+  private async searchOnce(
+    input: {
+      query: string
+      limit: number
+      filter?: KnowledgeFilter
+      signal: AbortSignal
+    },
+    sourceTypes: KnowledgeSourceType[],
+    filenames: string[] | undefined,
+    signal: AbortSignal,
+  ): Promise<RetrievedChunk[]> {
     const headers = new Headers({
       'content-type': 'application/json',
     })
     if (this.options.apiToken)
       headers.set('authorization', `Bearer ${this.options.apiToken}`)
 
-    let response: Response
-    try {
-      response = await this.request(this.options.searchUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          messages: [{ role: 'user', content: input.query }],
-          ai_search_options: {
-            retrieval: {
-              max_num_results: Math.min(Math.max(input.limit, 0), 50),
-              filters: {
-                evidence_role: this.options.evidenceRole,
-                source_type: sourceTypes.length === 1
-                  ? sourceTypes[0]
-                  : { $in: sourceTypes },
-                ...(filenames
-                  ? {
-                      filename: filenames.length === 1
-                        ? filenames[0]
-                        : { $in: filenames },
-                    }
-                  : {}),
-              },
+    const response = await waitForSignal(this.request(this.options.searchUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: input.query }],
+        ai_search_options: {
+          retrieval: {
+            max_num_results: Math.min(Math.max(input.limit, 0), 50),
+            filters: {
+              evidence_role: this.options.evidenceRole,
+              source_type: sourceTypes.length === 1
+                ? sourceTypes[0]
+                : { $in: sourceTypes },
+              ...(filenames
+                ? {
+                    filename: filenames.length === 1
+                      ? filenames[0]
+                      : { $in: filenames },
+                  }
+                : {}),
             },
           },
-        }),
-        signal: input.signal,
-      })
-    }
-    catch {
-      throw new CloudflareAiSearchError(
-        CloudflareAiSearchErrorCode.RequestFailed,
-      )
-    }
+        },
+      }),
+      signal,
+    }), signal)
 
     if (!response.ok) {
       throw new CloudflareAiSearchError(
@@ -228,9 +338,11 @@ export class CloudflareAiSearchRetriever implements KnowledgeSearchRetriever {
 
     let body: unknown
     try {
-      body = await response.json()
+      body = await waitForSignal(response.json(), signal)
     }
-    catch {
+    catch (error) {
+      if (signal.aborted)
+        throw error
       throw new CloudflareAiSearchError(
         CloudflareAiSearchErrorCode.InvalidResponse,
         response.status,

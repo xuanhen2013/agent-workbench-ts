@@ -23,10 +23,12 @@ function marketResult(index: number): MarketJdSearchResult {
 
 function createFixture(catalog?: MarketJdCatalog) {
   return createApp({
-    interviewQuizGraph: createQuizGraphFixture().graph,
+    interviewQuiz: {
+      graph: createQuizGraphFixture().graph,
+      importJdDocument: fakeImportJdDocument,
+      marketJdCatalog: catalog,
+    },
     jokeGraph: createJokeGraphFixture().graph,
-    importJdDocument: fakeImportJdDocument,
-    marketJdCatalog: catalog,
   })
 }
 

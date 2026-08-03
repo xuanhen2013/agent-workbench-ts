@@ -125,3 +125,19 @@ test('Cloudflare D1 Checkpointer 错误不泄漏响应正文', async () => {
     configurable: { thread_id: 'error-thread' },
   })).rejects.not.toThrow('private SQL')
 })
+
+test('Cloudflare D1 Checkpointer 请求超时只暴露稳定错误', async () => {
+  const saver = new CloudflareD1CheckpointSaver({
+    queryUrl: 'https://d1.test/query',
+    apiToken: 'test-token',
+    fetch: async () => await new Promise<Response>(() => {}),
+    timeoutMs: 5,
+  })
+
+  await expect(saver.getTuple({
+    configurable: { thread_id: 'timeout-thread' },
+  })).rejects.toMatchObject({
+    code: 'cloudflare_d1_checkpoint_request_timeout',
+    message: 'Cloudflare D1 checkpoint request timed out.',
+  })
+})

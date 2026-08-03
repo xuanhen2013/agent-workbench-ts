@@ -48,7 +48,7 @@ function findInterrupt<T>(
 
 test('真实 Responses API 完成两轮 Agent Quiz 并记录缓存 usage', async () => {
   assertSmokeEnvironment()
-  const { interviewQuizGraph: graph } = await createDefaultAppDeps()
+  const { interviewQuiz: { graph } } = await createDefaultAppDeps()
   const threadId = `interview-quiz-smoke-${crypto.randomUUID()}`
   const graphConfig = {
     configurable: { thread_id: threadId },

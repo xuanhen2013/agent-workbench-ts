@@ -10,8 +10,10 @@ import {
   toModelTurn,
 } from '@/agent/react/model-adapter'
 import {
+  DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   OpenAIResponsesExecutor,
   parseOpenAIReasoningEffort,
+  parseOpenAIRequestTimeoutMs,
 } from '@/clients/openai'
 import { AgentCallError, FailureCode, FailureKind } from '@/runtime'
 
@@ -78,6 +80,19 @@ async function advanceRetryDelay(ms: number) {
 }
 
 describe('OpenAIResponsesModel reliability', () => {
+  test('单次模型超时使用 180 秒默认值，并接受正整数覆盖', () => {
+    expect(parseOpenAIRequestTimeoutMs(undefined)).toBe(
+      DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
+    )
+    expect(parseOpenAIRequestTimeoutMs(' 240000 ')).toBe(240_000)
+
+    for (const invalid of ['0', '-1', '1.5', 'Infinity', 'not-a-number']) {
+      expect(() => parseOpenAIRequestTimeoutMs(invalid)).toThrow(
+        'Invalid OPENAI_REQUEST_TIMEOUT_MS',
+      )
+    }
+  })
+
   test('Provider 默认 model、store 和 reasoning 进入 Responses 请求', async () => {
     expect(parseOpenAIReasoningEffort(undefined)).toBeUndefined()
     expect(parseOpenAIReasoningEffort(' high ')).toBe('high')

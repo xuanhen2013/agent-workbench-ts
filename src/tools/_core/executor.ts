@@ -1,6 +1,7 @@
 import type { ToolExecutionResult } from './errors'
 import type { ToolRegistry } from './registry'
 import { z } from 'zod/v4'
+import { logger, toSafeErrorLog } from '@/logger'
 import {
   ToolExecutionErrorMessages,
   ToolExecutionErrorType,
@@ -123,6 +124,15 @@ export class ToolExecutor {
       if (error instanceof z.ZodError) {
         return failure(ToolExecutionErrorType.INVALID_ARGUMENTS, error.message)
       }
+
+      logger.warn({
+        component: 'tool_executor',
+        event: 'tool_handler_failed',
+        runId: options.runId,
+        toolCallId: call.callId,
+        toolName: call.name,
+        ...toSafeErrorLog(error),
+      }, 'Tool handler failed')
 
       return failure(
         ToolExecutionErrorType.EXECUTION_FAILED,
